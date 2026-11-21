@@ -43,6 +43,16 @@ struct EEPROMState {
      *  otherwise size > 256, use 2 byte
      */
     uint8_t asize;
+    /*
+     * 24c04, 24c08 and 24c16 take the address bits above the first byte
+     * from the low bits of the I2C address: they answer on 2, 4 or 8
+     * addresses from "address" up. nblocks counts them (1 for any other
+     * size) and block is the one of the transfer under way.
+     */
+    uint8_t nblocks;
+    uint8_t block;
+    /* write page size, 0 for none: a write wraps inside its page */
+    uint32_t page_size;
 
     bool writable;
     /* cells changed since last START? */
@@ -58,6 +68,24 @@ struct EEPROMState {
     uint32_t init_rom_size;
 };
 
+static bool at24c_eeprom_match(I2CSlave *s, uint8_t address, bool broadcast,
+                               I2CNodeList *current_devs)
+{
+    EEPROMState *ee = AT24C_EE(s);
+
+    if (!broadcast && ee->nblocks > 1 && address >= s->address &&
+        address < s->address + ee->nblocks) {
+        I2CNode *node = g_new(I2CNode, 1);
+
+        ee->block = address - s->address;
+        node->elt = s;
+        QLIST_INSERT_HEAD(current_devs, node, next);
+        return true;
+    }
+    return I2C_SLAVE_CLASS(object_class_get_parent(object_get_class(OBJECT(s))))
+        ->match_and_add(s, address, broadcast, current_devs);
+}
+
 static
 int at24c_eeprom_event(I2CSlave *s, enum i2c_event event)
 {
@@ -69,6 +97,9 @@ int at24c_eeprom_event(I2CSlave *s, enum i2c_event event)
         ee->haveaddr = 0;
         /* fallthrough */
     case I2C_START_RECV:
+        if (ee->nblocks > 1 && event != I2C_FINISH) {
+            ee->cur = (ee->block << 8) | (ee->cur & 0xff);
+        }
         DPRINTK("clear\n");
         if (ee->blk && ee->changed) {
             int ret = blk_pwrite(ee->blk, 0, ee->rsize, ee->mem, 0);
@@ -115,8 +146,12 @@ int at24c_eeprom_send(I2CSlave *s, uint8_t data)
     EEPROMState *ee = AT24C_EE(s);
 
     if (ee->haveaddr < ee->asize) {
-        ee->cur <<= 8;
-        ee->cur |= data;
+        if (ee->nblocks > 1) {
+            ee->cur = (ee->block << 8) | data;
+        } else {
+            ee->cur <<= 8;
+            ee->cur |= data;
+        }
         ee->haveaddr++;
         if (ee->haveaddr == ee->asize) {
             ee->cur %= ee->rsize;
@@ -131,8 +166,11 @@ int at24c_eeprom_send(I2CSlave *s, uint8_t data)
         } else {
             DPRINTK("Send error %02x read-only\n", data);
         }
-        ee->cur = (ee->cur + 1u) % ee->rsize;
-
+        if (ee->page_size && (ee->cur + 1u) % ee->page_size == 0) {
+            ee->cur -= ee->page_size - 1;
+        } else {
+            ee->cur = (ee->cur + 1u) % ee->rsize;
+        }
     }
 
     return 0;
@@ -209,11 +247,29 @@ static void at24c_eeprom_realize(DeviceState *dev, Error **errp)
      *   value is 0 as default, setting it by Rom size detecting.
      */
     if (ee->asize == 0) {
-        if (ee->rsize <= 256) {
+        if (ee->rsize <= 2048) {
             ee->asize = 1;
         } else {
             ee->asize = 2;
         }
+    }
+    if (ee->asize == 1 && ee->rsize > 256) {
+        ee->nblocks = ee->rsize / 256;
+        if (ee->rsize > 2048 || ee->rsize % 256 ||
+            (ee->nblocks & (ee->nblocks - 1)) ||
+            I2C_SLAVE(dev)->address % ee->nblocks) {
+            error_setg(errp, "%s: a one-byte address reaches 256 bytes, or "
+                       "2, 4 or 8 blocks at an address aligned to them",
+                       TYPE_AT24C_EE);
+            return;
+        }
+    } else {
+        ee->nblocks = 1;
+    }
+    if (ee->page_size & (ee->page_size - 1) || ee->page_size > ee->rsize) {
+        error_setg(errp, "%s: page-size must be a power of two within "
+                   "rom-size", TYPE_AT24C_EE);
+        return;
     }
 }
 
@@ -230,6 +286,7 @@ void at24c_eeprom_reset(DeviceState *state)
 static const Property at24c_eeprom_props[] = {
     DEFINE_PROP_UINT32("rom-size", EEPROMState, rsize, 0),
     DEFINE_PROP_UINT8("address-size", EEPROMState, asize, 0),
+    DEFINE_PROP_UINT32("page-size", EEPROMState, page_size, 0),
     DEFINE_PROP_BOOL("writable", EEPROMState, writable, true),
     DEFINE_PROP_DRIVE("drive", EEPROMState, blk),
 };
@@ -244,6 +301,7 @@ void at24c_eeprom_class_init(ObjectClass *klass, const void *data)
     k->event = &at24c_eeprom_event;
     k->recv = &at24c_eeprom_recv;
     k->send = &at24c_eeprom_send;
+    k->match_and_add = &at24c_eeprom_match;
 
     device_class_set_props(dc, at24c_eeprom_props);
     device_class_set_legacy_reset(dc, at24c_eeprom_reset);
