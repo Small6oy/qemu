@@ -1325,6 +1325,53 @@ guest runs:
 qom-set /machine/peripheral/gauge voltage-mv 3600
 ```
 
+## EEPROM and external RTC
+
+Vendor SDKs test two parts that a camera board may carry on an I2C bus; the
+models are off until a `-device` adds them (`-E` for `qemu-bsp.sh`).
+
+`at24c-eeprom` is the AT24C series. The SDKs' `sample_eeprom` binds a 24C16
+at I2C adapter 1, address 0x50:
+
+```bash
+-device at24c-eeprom,bus=i2c1,address=0x50,rom-size=2048
+```
+
+A 24C04, 24C08 or 24C16 (`rom-size` 512, 1024, 2048) has a one-byte word
+address and takes the bits above it from the I2C address, so it answers on
+2, 4 or 8 addresses from `address` up (0x50 to 0x57 for a 24C16, whose
+`address` must be a multiple of that count); 256 bytes or fewer is one
+address, 4096 and more a two-byte word address. `page-size=16` makes a
+write wrap inside its page as the part does (default 0: no page edge).
+`drive=` keeps the contents in a file of `rom-size` bytes; `writable=off`
+write-protects it. Writes take no time.
+
+`pcf8563` is the NXP PCF8563 RTC (the HYM8563 has the same registers), at
+0x51 unless given an `address`, for the Linux `rtc-pcf8563` driver and the
+SDK's `sample-alarm` on a board without the SoC's own RTC:
+
+```bash
+-device pcf8563,bus=i2c1,int-pin=40
+```
+
+| Property | Meaning |
+|---|---|
+| `vl` | start with the VL flag set, as a part first powered (default off: the clock is valid and is the host's) |
+| `int-pin` | the SoC GPIO the INT pin goes to (port * 32 + pad; default -1, none); INT is open-drain, low while active |
+| `gpio` | the GPIO controller, when there is more than one |
+
+The time is the host clock (`-rtc base=...,clock=vm` moves it) plus the
+offset a write of the time sets. The registers keep their values over a
+machine reset, as the part is not reset by the SoC. The alarm (minute,
+hour, day, weekday) sets AF when the minute increments to a match, as the
+data sheet says, so an alarm set for the minute that is running waits for
+its next turn; the part has no seconds alarm. The countdown timer runs its
+four clocks, TF and INT as a level or a pulse (TI_TP). Not modelled: CLKOUT
+(its bits read back), the EXT_CLK test mode and POR override.
+
+Camera board pin wiring is up to the kernel's device tree or board file
+(the IRQ for `rtc-pcf8563` is the pad `int-pin` names).
+
 ## Audio
 
 Every T-series SoC's audio controller (AIC) and internal codec are

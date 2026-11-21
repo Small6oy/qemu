@@ -143,6 +143,8 @@ config INGENIC_T31
     select IMAGE_SENSOR
     imply OPT3001
     imply CW2015
+    imply AT24C
+    imply PCF8563_RTC
     imply TMAG5273
     imply LTR308ALS
     imply WYZE_WCO2_MCU
@@ -259,6 +261,8 @@ config INGENIC_T40
     select IMAGE_SENSOR
     imply OPT3001
     imply CW2015
+    imply AT24C
+    imply PCF8563_RTC
     imply TMAG5273
     imply LTR308ALS
     imply WYZE_WCO2_MCU
