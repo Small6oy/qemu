@@ -22,8 +22,13 @@
  * "position-a" and "position-b" properties, clockwise positive. A channel
  * runs between 0 and "range" steps (0: no stop) and a step into a stop is lost.
  *
- * Only the driver's use is known; register meanings are inferred from it, no
- * datasheet was available, and the state registers' layout is an assumption.
+ * Wiring, from the T23 RD_T23_PIKE V1.1 schematic and BOM: the 5 V part
+ * (RuiMeng, two stepper channels and one DC channel) has SDATA and SCLK on
+ * the SoC's I2C with pull-ups, an address pin (ADDR0), and the clock pin on
+ * FCLK, PB27's PWM2 at 24 MHz (or a 24 MHz crystal): OUT1A to OUT2B drive
+ * motor 1 (horizontal), OUT3A to OUT4B motor 2 (vertical) and OUT5A and OUT5B
+ * the IR-cut coil. No datasheet is in the archive: the registers are the
+ * driver's, and the state registers' layout is an assumption.
  *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *

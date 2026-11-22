@@ -231,53 +231,123 @@ static uint16_t ms_read(QTestState *qts, uint8_t reg)
 #define VD      63
 #define RST     17
 
+/* A VD_FZ pulse, 3 ms a level: a move of PSUM 8 takes 2.4 ms with INTCT 256 */
 static void vd_pulse(QTestState *qts)
 {
     gpio_out(qts, VD, 1);
+    qtest_clock_step(qts, 3 * MS);
     gpio_out(qts, VD, 0);
+    qtest_clock_step(qts, 3 * MS);
 }
 
+/*
+ * The MS41929 datasheet's registers: initial values, the bits kept, a
+ * move of PSUM * 8 256ths of a cycle at each rising VD_FZ edge after DT1
+ * and DT2, the falling edge with MODESEL_FZ, the stops, the move a coming
+ * edge cancels, and ENDIS, BRAKE and DT1 holding the rotor
+ */
 static void test_ms419xx(void)
 {
     QTestState *qts = qtest_init("-machine ingenic-t31 "
                                  "-global ingenic-t31.soc-variant=t31x "
                                  "-device ms419xx,id=ms,bus=ssi0,cs=0,"
-                                 "vd-pin=63,reset-pin=17,range=80");
+                                 "vd-pin=63,reset-pin=17,range=640");
+    int64_t cd;
 
     gpio_out(qts, RST, 1);
     gpio_out(qts, RST, 0);
+    g_assert_cmphex(ms_read(qts, 0x20), ==, 0x3c0a);
+    g_assert_cmphex(ms_read(qts, 0x22), ==, 0x0003);
+    g_assert_cmphex(ms_read(qts, 0x27), ==, 0x0003);
+    ms_write(qts, 0x2c, 0xffff);
+    g_assert_cmphex(ms_read(qts, 0x2c), ==, 0x0007);
+    ms_write(qts, 0x30, 0x1234);
+    g_assert_cmphex(ms_read(qts, 0x30), ==, 0);
+
+    /* what the vendor driver writes */
     ms_write(qts, 0x20, 0x1e01);
     g_assert_cmphex(ms_read(qts, 0x20), ==, 0x1e01);
-    ms_write(qts, 0x24, 0x3508);
-    ms_write(qts, 0x29, 0x3408);
-    g_assert_cmphex(ms_read(qts, 0x24), ==, 0x3508);
-    g_assert_cmphex(ms_read(qts, 0x29), ==, 0x3408);
+    ms_write(qts, 0x22, 0x0001);
+    ms_write(qts, 0x27, 0x0001);
+    ms_write(qts, 0x25, 0x0100);
+    ms_write(qts, 0x2a, 0x0100);
+    ms_write(qts, 0x24, 0x3408);
+    ms_write(qts, 0x29, 0x3508);
+    g_assert_cmphex(ms_read(qts, 0x24), ==, 0x3408);
+    g_assert_cmphex(ms_read(qts, 0x29), ==, 0x3508);
 
-    /* the registers take effect at the VD edge only */
-    g_assert_cmpint(prop(qts, "ms", "position-ab"), ==, 0);
-    gpio_out(qts, VD, 1);
-    g_assert_cmpint(prop(qts, "ms", "position-ab"), ==, 0);
+    /* a released pad reads high: the first rising edge comes after a low */
     gpio_out(qts, VD, 0);
-    g_assert_cmpint(prop(qts, "ms", "position-ab"), ==, 8);
-    /* CD counts down from 0: a stop at 0 */
+    qtest_clock_step(qts, 3 * MS);
+    g_assert_cmpint(prop(qts, "ms", "position-ab"), ==, 0);
+
+    /* the rising edge starts it, the waits and the steps take their time */
+    gpio_out(qts, VD, 1);
+    qtest_clock_step(qts, 1 * MS);
+    g_assert_cmpint(prop(qts, "ms", "position-ab"), ==, 0);
+    qtest_clock_step(qts, 2 * MS);
+    g_assert_cmpint(prop(qts, "ms", "position-ab"), ==, 64);
+    /* CD is reverse from 0: a stop */
     g_assert_cmpint(prop(qts, "ms", "position-cd"), ==, 0);
     g_assert_cmpint(prop(qts, "ms", "stalls-cd"), ==, 1);
+    gpio_out(qts, VD, 0);
+    qtest_clock_step(qts, 3 * MS);
+    g_assert_cmpint(prop(qts, "ms", "position-ab"), ==, 64);
 
-    for (int i = 0; i < 12; i++) {
+    for (int i = 0; i < 11; i++) {
         vd_pulse(qts);
     }
-    g_assert_cmpint(prop(qts, "ms", "position-ab"), ==, 80);
-    g_assert_cmpint(prop(qts, "ms", "stalls-ab"), ==, 3);
+    g_assert_cmpint(prop(qts, "ms", "position-ab"), ==, 640);
+    g_assert_cmpint(prop(qts, "ms", "stalls-ab"), ==, 2);
     ms_write(qts, 0x24, 0x3000);
-    ms_write(qts, 0x29, 0x3508);
+    ms_write(qts, 0x29, 0x3408);
     vd_pulse(qts);
     vd_pulse(qts);
-    g_assert_cmpint(prop(qts, "ms", "position-ab"), ==, 80);
-    g_assert_cmpint(prop(qts, "ms", "position-cd"), ==, 16);
+    g_assert_cmpint(prop(qts, "ms", "position-ab"), ==, 640);
+    g_assert_cmpint(prop(qts, "ms", "position-cd"), ==, 128);
 
-    /* the reset pin clears the registers */
+    /* a move too long for the VD interval is cancelled at the next edge */
+    ms_write(qts, 0x2a, 0x0400);
+    vd_pulse(qts);
+    vd_pulse(qts);
+    cd = prop(qts, "ms", "position-cd");
+    g_assert_cmpint(cd, >, 128 + 10);
+    g_assert_cmpint(cd, <, 128 + 64);
+    /* and the move that edge started runs its 64 units out */
+    qtest_clock_step(qts, 10 * MS);
+    g_assert_cmpint(prop(qts, "ms", "position-cd"), ==, cd + 64);
+    cd += 64;
+    ms_write(qts, 0x2a, 0x0100);
+
+    /* held: outputs off, brake, no step cycle, no DT1 */
+    ms_write(qts, 0x29, 0x3008);
+    vd_pulse(qts);
+    ms_write(qts, 0x29, 0x3608);
+    vd_pulse(qts);
+    ms_write(qts, 0x29, 0x3408);
+    ms_write(qts, 0x2a, 0);
+    vd_pulse(qts);
+    ms_write(qts, 0x2a, 0x0100);
+    ms_write(qts, 0x20, 0x1e00);
+    vd_pulse(qts);
+    ms_write(qts, 0x20, 0x1e01);
+    g_assert_cmpint(prop(qts, "ms", "position-ab"), ==, 640);
+    g_assert_cmpint(prop(qts, "ms", "position-cd"), ==, cd);
+
+    /* MODESEL_FZ: the falling edge acts and the rising one does not */
+    ms_write(qts, 0x0b, 0x0400);
+    ms_write(qts, 0x24, 0x3508);
+    gpio_out(qts, VD, 1);
+    qtest_clock_step(qts, 3 * MS);
+    g_assert_cmpint(prop(qts, "ms", "position-ab"), ==, 640);
+    gpio_out(qts, VD, 0);
+    qtest_clock_step(qts, 3 * MS);
+    g_assert_cmpint(prop(qts, "ms", "position-ab"), ==, 576);
+
+    /* the reset pin gives the initial values back */
     gpio_out(qts, RST, 1);
     g_assert_cmphex(ms_read(qts, 0x29), ==, 0);
+    g_assert_cmphex(ms_read(qts, 0x20), ==, 0x3c0a);
     qtest_quit(qts);
 }
 
@@ -295,6 +365,26 @@ static uint8_t tmi_read(QTestState *qts, uint8_t reg)
 
     ssi_msg(qts, false, false, tx, rx, 2);
     return rx[1];
+}
+
+static char *prop_str(QTestState *qts, const char *id, const char *name)
+{
+    char *path = g_strdup_printf("/machine/peripheral/%s", id);
+    QDict *r = qtest_qmp(qts, "{'execute': 'qom-get', 'arguments': "
+                         "{'path': %s, 'property': %s}}", path, name);
+    char *v = g_strdup(qdict_get_str(r, "return"));
+
+    qobject_unref(r);
+    g_free(path);
+    return v;
+}
+
+static void check_ircut(QTestState *qts, const char *state)
+{
+    char *v = prop_str(qts, "tmi", "ircut");
+
+    g_assert_cmpstr(v, ==, state);
+    g_free(v);
 }
 
 static QTestState *tmi_init(const char *type)
@@ -332,15 +422,27 @@ static void test_tmi8152(void)
     g_assert_cmpint(prop(qts, "tmi", "position-2"), ==, -5);
     g_assert_cmphex(tmi_read(qts, 0x18), ==, 5);
 
+    /* the IR-cut bridge: IREN, IRINA and IRINB as the TMI8150B's table */
+    tmi_write(qts, 0x11, 0x86);
+    check_ircut(qts, "forwards");
+    tmi_write(qts, 0x11, 0x8a);
+    check_ircut(qts, "backwards");
+    tmi_write(qts, 0x11, 0x8e);
+    check_ircut(qts, "brake");
+    tmi_write(qts, 0x11, 0x82);
+    check_ircut(qts, "coast");
+    tmi_write(qts, 0x11, 0x06);
+    check_ircut(qts, "off");
+
     /* a disabled channel stands, and the chip reset clears the counters */
     tmi_write(qts, 0x02, 0x03);
     g_assert_cmphex(tmi_read(qts, 0x08), ==, 0);
     qtest_quit(qts);
 }
 
-static void test_tmi8153(void)
+static void test_tmi8160(const void *type)
 {
-    QTestState *qts = tmi_init("tmi8153");
+    QTestState *qts = tmi_init(type);
 
     tmi_write(qts, 0x02, 0x8a);
     tmi_write(qts, 0x20, 0x1d);
@@ -366,6 +468,8 @@ static void test_tmi8153(void)
     g_assert_cmpint(prop(qts, "tmi", "position-1"), ==, 18);
     g_assert_cmphex(tmi_read(qts, 0x2a), ==, 0xf4);
     g_assert_cmphex(tmi_read(qts, 0x2b), ==, 0xff);
+    tmi_write(qts, 0x10, 0x86);
+    check_ircut(qts, "forwards");
 
     /* channel 2 is at +0x20 */
     tmi_write(qts, 0x42, 7 << 4 | 0x1);
@@ -438,7 +542,8 @@ int main(int argc, char **argv)
 
     qtest_add_func("motor-chips/ms419xx", test_ms419xx);
     qtest_add_func("motor-chips/tmi8152", test_tmi8152);
-    qtest_add_func("motor-chips/tmi8153", test_tmi8153);
+    qtest_add_data_func("motor-chips/tmi8160", "tmi8160", test_tmi8160);
+    qtest_add_data_func("motor-chips/tmi8153", "tmi8153", test_tmi8160);
     qtest_add_func("motor-chips/ms32006", test_ms32006);
     return g_test_run();
 }

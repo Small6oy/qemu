@@ -1,18 +1,32 @@
 /*
- * TMI8152 and TMI8153 micro-stepping motor drivers (SPI)
+ * TMI8152 and TMI8160 (the TMI8153) micro-stepping motor drivers (SPI)
  *
- * Two motor channels and an H bridge for an IR-cut filter behind 8-bit
- * registers: the address byte with bit 7 set writes the next byte there,
- * without it the next byte read comes back; chip select is active low and
- * the bits go MSB first. Each channel has a control register (bit 7
- * enables the channel, 0x07 and 0x1d are the manual modes the driver
- * sets), a mode register (bits 7:4 the step division, bits 3:0 the output:
- * TMI8152 0x5 clockwise, 0xa counter-clockwise, 0xf brake, 0 open; TMI8153
- * 0x1, 0x2, 0x3 and 0), clock dividers, a revolution counter (16 bits,
- * low then high) and the count to run to (16 bits). The global register
- * (0x02) enables the chip with bit 7.
+ * The TMI8152 shares its pinout, its SPI and its five channels with the
+ * TMI8150B, whose datasheet (V0.3, 2022.02) says: four channels drive two
+ * stepper motors (X and Y) in six modes, the default being the one where a
+ * target number of steps and a phase are set (Function description, p.5),
+ * with 64, 128, 256 or 512 micro steps (p.9); the fifth channel drives the
+ * IR-cut coil (p.10: with IREN high, IRINA high and IRINB low is forwards,
+ * the reverse backwards, both high brake, both low coast); CS is active
+ * low, 5 MHz at most (SPI Logic Description, p.7). The register map and the
+ * SPI frame are in figures the text does not carry, and the TMI8160, which
+ * the T41's BOM calls the TMI8153, has no datasheet in the archive: the
+ * registers below are the SDK drivers' (sample_motor4 for the TMI8152,
+ * sample_motor5, which names the TMI8160 manual, for the other).
  *
- *            TMI8152                       TMI8153
+ * The address byte with bit 7 set writes the next byte there, without it
+ * the next byte read comes back; the bits go MSB first. Each channel has a
+ * control register (bit 7 enables the channel, 0x07 and 0x1d are the manual
+ * modes the driver sets), a mode register (bits 7:4 the step division, bits
+ * 3:0 the output: TMI8152 0x5 clockwise, 0xa counter-clockwise, 0xf brake,
+ * 0 open; TMI8160 0x1, 0x2, 0x3 and 0), clock dividers, a revolution counter
+ * (16 bits, low then high) and the count to run to (16 bits). The global
+ * register (0x02) enables the chip with bit 7. The IR-cut register (0x11,
+ * 0x10 on the TMI8160) has IREN in bit 7, IRINA in bit 2 and IRINB in bit 3,
+ * as the driver's 0x86 and 0x8a write them against the table above; its
+ * state is the "ircut" property.
+ *
+ *            TMI8152                       TMI8160
  *   channel  1       2                      1       2
  *   control  0x04    0x14                   0x20    0x40
  *   mode     0x05    0x15                   0x22    0x42
@@ -23,14 +37,18 @@
  * An enabled channel in a drive mode moves one step per "step-us" while the
  * chip is enabled, until the counter equals the count to run to, then
  * holds. The TMI8152's counter counts the steps made in either direction
- * and its driver writes the count as it is; the TMI8153's counts up
+ * and its driver writes the count as it is; the TMI8160's counts up
  * clockwise and down counter-clockwise, and its driver writes 65536 minus
  * the count for counter-clockwise: that is how the two are modelled, from
- * the drivers (no datasheet was available, the clock dividers and the
- * step-us time per step are not derived from them). Writing the counter
- * restarts the count. The "position-1" and "position-2" properties are the
- * rotors' net steps, clockwise positive; the IR-cut bridge register is kept
- * and traced.
+ * the drivers (the clock dividers and the step-us time per step are not
+ * derived from them). Writing the counter restarts the count. The
+ * "position-1" and "position-2" properties are the rotors' net steps,
+ * clockwise positive.
+ *
+ * Wiring, from the T23 RD_T23_EEL V1.1 schematic (TMI8153) and the PIKE's
+ * note that such a driver can replace the MS32006: CS, SCLK, SDI and SDO on
+ * the SoC's SSI, OUT1A to OUT2B the horizontal motor, OUT3A to OUT4B the
+ * vertical one, IROA and IROB the IR-cut coil, an EN pin.
  *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *
@@ -50,6 +68,7 @@
 
 #define TYPE_TMI815X "tmi815x"
 #define TYPE_TMI8152 "tmi8152"
+#define TYPE_TMI8160 "tmi8160"
 #define TYPE_TMI8153 "tmi8153"
 OBJECT_DECLARE_TYPE(Tmi815xState, Tmi815xClass, TMI815X)
 
@@ -156,12 +175,25 @@ static void tmi_sync(Tmi815xState *s)
     }
 }
 
+static const char *tmi_ircut_state(uint8_t v)
+{
+    bool a = v & 4, b = v & 8;
+
+    if (!(v & 0x80)) {
+        return "off";
+    }
+    return a && b ? "brake" : a ? "forwards" : b ? "backwards" : "coast";
+}
+
 static void tmi_write(Tmi815xState *s, unsigned addr, uint8_t v)
 {
     const Tmi815xLayout *l = TMI815X_GET_CLASS(s)->lay;
 
     s->reg[addr] = v;
     trace_tmi815x_write(addr, v);
+    if (addr == l->ircut) {
+        trace_tmi815x_ircut(tmi_ircut_state(v));
+    }
     for (int c = 0; c < 2; c++) {
         unsigned o = l->cnt + c * l->stride;
 
@@ -227,8 +259,17 @@ static void tmi_get_pos(Object *obj, Visitor *v, const char *name,
     visit_type_int(v, name, &pos, errp);
 }
 
+static char *tmi_get_ircut(Object *obj, Error **errp)
+{
+    Tmi815xState *s = TMI815X(obj);
+
+    return g_strdup(tmi_ircut_state(
+                        s->reg[TMI815X_GET_CLASS(s)->lay->ircut]));
+}
+
 static void tmi_init(Object *obj)
 {
+    object_property_add_str(obj, "ircut", tmi_get_ircut, NULL);
     object_property_add(obj, "position-1", "int",
                         &int_type_info, tmi_get_pos,
                         NULL, NULL, GINT_TO_POINTER(0));
@@ -311,10 +352,15 @@ static void tmi8152_class_init(ObjectClass *klass, const void *data)
     DEVICE_CLASS(klass)->desc = "TMI8152 motor driver";
 }
 
-static void tmi8153_class_init(ObjectClass *klass, const void *data)
+static void tmi8160_class_init(ObjectClass *klass, const void *data)
 {
     TMI815X_CLASS(klass)->lay = &lay8153;
-    DEVICE_CLASS(klass)->desc = "TMI8153 motor driver";
+    DEVICE_CLASS(klass)->desc = "TMI8160 motor driver";
+}
+
+static void tmi8153_class_init(ObjectClass *klass, const void *data)
+{
+    DEVICE_CLASS(klass)->desc = "TMI8153 (the TMI8160's older name)";
 }
 
 static const TypeInfo tmi_types[] = {
@@ -331,8 +377,12 @@ static const TypeInfo tmi_types[] = {
         .parent = TYPE_TMI815X,
         .class_init = tmi8152_class_init,
     }, {
-        .name = TYPE_TMI8153,
+        .name = TYPE_TMI8160,
         .parent = TYPE_TMI815X,
+        .class_init = tmi8160_class_init,
+    }, {
+        .name = TYPE_TMI8153,
+        .parent = TYPE_TMI8160,
         .class_init = tmi8153_class_init,
     },
 };
