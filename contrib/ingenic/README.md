@@ -940,8 +940,37 @@ Left out: the T32's k2-alone jobs, whose top rows (and a few others) the
 part fills from its line buffer's earlier contents, and the out-of-range-zoom
 job but for its first columns, where a few rows of the next column differ;
 the lens-correction (HLDC) captures and the ISP statistics
-captures, which are sensor pictures of a scene; the stock firmware and
-vendor library dumps.
+captures, which are sensor pictures of a scene.
+
+The stock firmware and vendor library dumps stay out of the tree as well:
+they are vendor code, and this is a public repository. No qtest and no CI
+job reads them, so a build without them runs every test. What depends on
+them:
+
+- Values the tests and models carry, taken from a dump: what libimp
+  programs (its quality 75 JPEG quantizers, the IPU's conversions, the
+  settings it leaves a T23N's or T31's ISP streaming with, the headers it
+  writes round an encoder's stream) and the replies of Wyze's MCU firmware
+  02.01.09. A test names the source in its header. The test keeps the
+  value, so it runs without the dump; a change to such a value is checked
+  against the dump by hand.
+- `contrib/ingenic/wco2-sleep-e2e.py`, which runs the sleep and wake cycle
+  on a stock Wyze Cam Outdoor v2 image.
+- A stock image booted to its app, the check a change to a model is tried
+  on before it goes in (a Jooan T31LC streaming, a T33L's detector on the
+  TNPU, the A1's watchdog runs), and an ISP trace of a stock driver to
+  diff against another.
+
+They are kept outside the repository and its releases. Read your own from
+the camera's flash (with a programmer, or the `mtd` partitions from a shell
+on the camera), and boot a copy: the guest's flash writes go to the image.
+Then:
+
+```bash
+./qemu-bsp.sh -i stock.bin -V <variant>       # boot to the app, console on stdio
+contrib/ingenic/wco2-sleep-e2e.py wco2.bin --wdt-scale 10
+contrib/ingenic/isp-trace.py diff stock.log open.log --at stream
+```
 
 ## Pin trace
 
