@@ -454,3 +454,8 @@ config MS419XX
     bool
     depends on INGENIC_SSI
     default y if INGENIC_SSI
+
+config TMI815X
+    bool
+    depends on INGENIC_SSI
+    default y if INGENIC_SSI
