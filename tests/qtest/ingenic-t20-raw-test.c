@@ -4,10 +4,11 @@
  *
  * As a T20X (Wyze V2, JXF23) runs sample-Snap-Raw: the core's processing
  * bypassed, the DS1 writer RAW16 with the line offset twice the width, the
- * samples the sensor's 10 bits left justified in 16 in the Bayer order of
- * 0x80018 (B Gb / Gr R), a line to the line offset with nothing written
- * between lines, the writer's size what it takes from the top left; set to
- * RAW12 it takes the 10 bits left justified in 12, two samples to 3 bytes.
+ * samples the sensor's 10 bits left justified in 16 in the sensor's Bayer
+ * order (the JXQ03's B Gb / Gr R) whatever 0x80018 says, a line to the
+ * line offset with nothing written between lines, the writer's size what
+ * it takes from the top left; set to RAW12 it takes the 10 bits left
+ * justified in 12, two samples to 3 bytes.
  *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *
@@ -38,17 +39,26 @@
 #define BX              4
 #define BY              4
 
-static QTestState *start(const char *machine)
+/* The Bayer orders as 0x80018 numbers them, by image-sensor's names */
+static const char *const bayer_names[4] = { "rggb", "grbg", "gbrg", "bggr" };
+
+/* A sensor of Bayer order @bayer (its own, BGGR, if NULL) */
+static QTestState *start_bayer(const char *machine, const char *bayer)
 {
     g_autofree char *args = g_strdup_printf(
-        "-machine %s -device image-sensor,model=jxq03,bus=i2c0,motion=off",
-        machine);
+        "-machine %s -device image-sensor,model=jxq03,bus=i2c0,motion=off%s%s",
+        machine, bayer ? ",bayer=" : "", bayer ? bayer : "");
     QTestState *qts = qtest_init(args);
 
     qtest_writel(qts, CPM_CLKGR0, 0);
     qtest_writel(qts, CORE + 0x10, W);
     qtest_writel(qts, CORE + 0x14, H);
     return qts;
+}
+
+static QTestState *start(const char *machine)
+{
+    return start_bayer(machine, NULL);
 }
 
 /* Writer @base: format @cfg, @size, @line apart, three banks; run */
@@ -117,12 +127,13 @@ static void check_block(QTestState *qts, int pattern)
     g_assert_cmpuint(v[2] * 256 / v[1], <=, 144);
 }
 
+/* A sensor of each order puts it out, 0x80018 set to another */
 static void test_bayer(const void *data)
 {
     int pattern = GPOINTER_TO_INT(data);
-    QTestState *qts = start("ingenic-t20");
+    QTestState *qts = start_bayer("ingenic-t20", bayer_names[pattern]);
 
-    qtest_writel(qts, CORE + 0x18, pattern);
+    qtest_writel(qts, CORE + 0x18, (pattern + 1) & 3);
     writer(qts, DS1, RAW16, H << 16 | W, W * 2);
     run(qts);
     check_block(qts, pattern);
@@ -134,18 +145,17 @@ static void test_bayer(const void *data)
  * phase silicon's red lies in is the one that stands out in the red bar and
  * falls away in the blue bar, B the other way round. A T20X (JXF23, BGGR,
  * 0x80018 = 3) put its yellow level's colour on (1, 1) as R and (0, 0) as
- * B, and the register moves nothing in the raw output; the model follows
- * the register, the order a guest writes for its sensor
+ * B; the sensor's order decides, 0x80018 (here another) none of it
  */
 static void test_red(const void *data)
 {
     /* R's phase (x, y) in each order, B's the opposite corner */
     static const int rx[4] = { 0, 1, 0, 1 }, ry[4] = { 0, 0, 1, 1 };
     int pattern = GPOINTER_TO_INT(data);
-    QTestState *qts = start("ingenic-t20");
+    QTestState *qts = start_bayer("ingenic-t20", bayer_names[pattern]);
     uint16_t v[2][2][2];
 
-    qtest_writel(qts, CORE + 0x18, pattern);
+    qtest_writel(qts, CORE + 0x18, (pattern + 2) & 3);
     writer(qts, DS1, RAW16, H << 16 | W, W * 2);
     run(qts);
     for (int bar = 0; bar < 2; bar++) {
@@ -168,6 +178,30 @@ static void test_red(const void *data)
         }
     }
     qtest_quit(qts);
+}
+
+/*
+ * Silicon's raw frame ignores 0x80018: a T20X and a T10L, both BGGR, put
+ * out the same samples for 0 to 3 (it tells the core the order, for its
+ * white balance and the rest). The sensor's order stays, B on (0, 0).
+ */
+static void test_register(void)
+{
+    static uint8_t first[W * H * 2], frame[W * H * 2];
+
+    for (int pattern = 0; pattern < 4; pattern++) {
+        QTestState *qts = start("ingenic-t20");
+
+        qtest_writel(qts, CORE + 0x18, pattern);
+        writer(qts, DS1, RAW16, H << 16 | W, W * 2);
+        run(qts);
+        check_block(qts, 3);
+        qtest_memread(qts, BANK(1), pattern ? frame : first, sizeof(frame));
+        if (pattern) {
+            g_assert_cmpmem(frame, sizeof(frame), first, sizeof(first));
+        }
+        qtest_quit(qts);
+    }
 }
 
 static void test_line(void)
@@ -311,6 +345,7 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(name, GINT_TO_POINTER(p), test_red);
     }
+    qtest_add_func("/ingenic-t20-raw/register", test_register);
     qtest_add_func("/ingenic-t20-raw/line", test_line);
     qtest_add_func("/ingenic-t20-raw/size", test_size);
     qtest_add_func("/ingenic-t20-raw/raw12", test_raw12);

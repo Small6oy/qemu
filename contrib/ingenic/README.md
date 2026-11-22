@@ -423,8 +423,8 @@ pipeline: its frames reach memory only raw, through the VIC's own capture,
 as libimp's ISP bypass and tx-isp's `snapraw` take them (every VIC has
 one: `echo snapraw 0 1 > /proc/jz/isp/isp-w02` saves a raw frame of
 sensor 0). Raw frames are 16 bits a pixel, the sensor's bits at the top,
-in an RGGB pattern. Joint mode, two sensors' pictures in one buffer,
-needs nothing more: the driver sets both pipelines' channels into it.
+in the sensor's own Bayer order (below). Joint mode, two sensors'
+pictures in one buffer, needs nothing more: the driver sets both pipelines' channels into it.
 
 A T23 runs two or three sensors through its one VIC behind a MIPI switch,
 the sensors taking turns frame by frame. Its dual-sensor tx-isp has the
@@ -698,9 +698,8 @@ A T30 has both devices: the channels come from the multi-scaler
   sensor, as 16-bit little-endian samples, frames back to back, the
   sensor's bits (the VIC's 8, 10 or 12) left justified in 16 with the low
   bits 0, the way the VIC's raw capture writes them. `<pixfmt>` is ffmpeg's
-  name for the Bayer order: `bayer_rggb16le` on the T21 to T41, the
-  order the core is set to on a T10, T20 or T30 (10-bit samples, before
-  any black level or gain).
+  name for the sensor's Bayer order, such as `bayer_bggr16le` (on a T10,
+  T20 or T30 10-bit samples, before any black level or gain).
 
 A file starts with the channel's or VIC's first frame and grows with each
 one. A new size (the guest reconfigures a channel) goes on in a new file:
@@ -710,11 +709,11 @@ guest runs:
 ```bash
 ffplay -follow 1 -i file:/tmp/tap/isp-0-0.y4m
 ffplay -follow 1 -framerate 25 -f rawvideo -video_size 1920x1080 \
-    -pixel_format bayer_rggb16le -i file:/tmp/tap/raw-0-1920x1080-bayer_rggb16le.raw
+    -pixel_format bayer_bggr16le -i file:/tmp/tap/raw-0-1920x1080-bayer_bggr16le.raw
 ```
 
 The raw file's size and pixel format are in its name; ffmpeg and ffplay
-debayer it themselves (`-pixel_format bayer_rggb16le`). The y4m header
+debayer it themselves (`-pixel_format bayer_bggr16le`). The y4m header
 carries the sensor's frame rate, so a channel that drops frames plays
 faster than the guest sees it. At 1080p a file grows by 3 MB a frame (raw:
 4 MB) as fast as the guest runs, so for more than a few seconds use a FIFO
@@ -779,6 +778,16 @@ its ramp, `kelvin`, IR and the IR-cut filter, `noise`, `sensor-noise`,
 each input's mirror and flip and `stamp` apply on top, as on the bars;
 `object` is the bars' and `grey` replaces the scene. A file or stream that
 is not 4:2:0 YUV4MPEG2 is refused at start (`-pix_fmt yuv420p`).
+
+Raw frames (the VICs' raw capture, the T41's and T32's raw WDMA, a T10's,
+T20's or T30's raw writer, the frame tap's `.raw` files) come in the
+sensor's own Bayer order, as on silicon, where the ISP's order register
+tells the core the order but changes nothing in the raw frame. Each model
+has the order its vendor drivers give for the unmirrored, unflipped
+readout (BGGR for most, RGGB for the gc2053 and gc4023, GRBG for the
+gc4653); `bayer=rggb`, `grbg`, `gbrg` or `bggr` sets another. A real
+sensor's order moves with its own mirror and flip, which the model does
+not follow.
 
 ### Lens correction
 
