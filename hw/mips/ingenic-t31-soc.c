@@ -733,6 +733,9 @@ Clock *ingenic_t31_cpu_clock(IngenicT31State *s)
     if (extract32(v->cpuid, 12, 16) == 0x0031) {
         qdev_prop_set_uint8(cpm, "hash-gate", 18);
     }
+    /* CIMCDR's CE and source PLL gate the MCLK as measured on a T31X */
+    qdev_prop_set_bit(cpm, "cim-pll-check",
+                      extract32(v->cpuid, 12, 16) == 0x0031);
     /*
      * A gated UART reads 0: CLKGR0 bits 11 to 13 on a T32LQ, 14 to 16 on
      * a T10L, T21N, T23DL and T31X (the T20's and T30's by their kernels)

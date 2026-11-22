@@ -83,6 +83,7 @@ struct IngenicT31CpmState {
     uint8_t ivdc_gate_bit;      /* the CLKGR1 bit that gates the IVDC */
     uint32_t usbrdt_mask;       /* the USBRDT bits that hold a write */
     uint32_t srbc_held;         /* SRBC acks that read 1, no stop asked */
+    bool cim_pll_check;         /* CIMCDR's CE and PLL decide MCLK: T31 */
     bool ssicdr_ce28;           /* SSICDR's change enable at 28, busy at 27 */
     uint8_t i2s_duty;           /* INGENIC_T31_I2S_DUTY_*: see below */
     uint8_t i2s_cdr;            /* INGENIC_T31_I2S_CDR_*: see below */

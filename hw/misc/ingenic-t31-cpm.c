@@ -139,11 +139,32 @@ static void ingenic_t31_cpm_latch(IngenicT31CpmState *s, hwaddr cdr,
     }
 }
 
+static uint64_t ingenic_t31_cpm_src_hz(IngenicT31CpmState *s, uint32_t v);
+
+/*
+ * Whether the CIM divider's clock runs: not stopped and, where the part's
+ * CIMCDR is measured (cim-pll-check), CE clear (a divider left with CE set
+ * does not run until CE is written back to 0, as the vendor kernels do) and
+ * its source PLL on.
+ */
+static bool ingenic_t31_cpm_mclk_running(IngenicT31CpmState *s)
+{
+    uint32_t v = ingenic_t31_cpm_cdr(s, CPM_CIMCDR);
+
+    if (v & CGU_STOP) {
+        return false;
+    }
+    if (!s->cim_pll_check) {
+        return true;
+    }
+    return !(s->regs[REG_INDEX(CPM_CIMCDR)] & CGU_CE) &&
+           ingenic_t31_cpm_src_hz(s, v);
+}
+
 /* The CIM's clock, the sensor's MCLK, and the T23's IVDC's, the VPU's */
 static void ingenic_t31_cpm_update_stops(IngenicT31CpmState *s)
 {
-    qemu_set_irq(s->cim_clock,
-                 !(ingenic_t31_cpm_cdr(s, CPM_CIMCDR) & CGU_STOP));
+    qemu_set_irq(s->cim_clock, ingenic_t31_cpm_mclk_running(s));
     qemu_set_irq(s->ivdc_clock,
                  !(ingenic_t31_cpm_cdr(s, CPM_VPUCDR) & CGU_STOP));
 }
@@ -755,6 +776,11 @@ static void ingenic_t31_cpm_wdt_reset(void *opaque, int n, int level)
     }
 }
 
+static bool ingenic_t31_cpm_get_mclk(Object *obj, Error **errp)
+{
+    return ingenic_t31_cpm_mclk_running(INGENIC_T31_CPM(obj));
+}
+
 static void ingenic_t31_cpm_init(Object *obj)
 {
     IngenicT31CpmState *s = INGENIC_T31_CPM(obj);
@@ -792,6 +818,8 @@ static void ingenic_t31_cpm_init(Object *obj)
     s->pwm_clk = qdev_init_clock_out(DEVICE(s), "pwm-clk");
     s->tnpu_clk = qdev_init_clock_out(DEVICE(s), "tnpu-clk");
     s->lcd_clk = qdev_init_clock_out(DEVICE(s), "lcd-clk");
+    object_property_add_bool(obj, "mclk-running", ingenic_t31_cpm_get_mclk,
+                             NULL);
 }
 
 /* Defaults: CPU from APLL, APLL 600 MHz (m=25), MPLL 1200 MHz (m=50) */
@@ -829,6 +857,8 @@ static const Property ingenic_t31_cpm_properties[] = {
                        UINT32_MAX),
     DEFINE_PROP_UINT32("srbc-held", IngenicT31CpmState, srbc_held, 0),
     DEFINE_PROP_BOOL("isp-mux", IngenicT31CpmState, isp_mux, false),
+    DEFINE_PROP_BOOL("cim-pll-check", IngenicT31CpmState, cim_pll_check,
+                     false),
     DEFINE_PROP_BOOL("ssicdr-ce28", IngenicT31CpmState, ssicdr_ce28, true),
     DEFINE_PROP_UINT8("i2s-duty", IngenicT31CpmState, i2s_duty,
                       INGENIC_T31_I2S_DUTY_NONE),
