@@ -90,6 +90,7 @@ struct IngenicTcuState {
     uint32_t stop_drops;    /* registers a stopped channel drops, bits 0-3 */
     bool tcsr_bit11_stops;  /* a TCSR with bit 11 set does not count */
     bool tcsr_gated;        /* counts only with the extra enables set */
+    bool chn_hold;          /* TCSR bit 23: no wrap, it stands at 0xffff */
     unsigned channels;      /* those of its channels, from flags */
 
     CharFrontend trace;

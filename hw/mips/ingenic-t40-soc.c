@@ -1042,6 +1042,8 @@ static void ingenic_t40_realize(DeviceState *dev, Error **errp)
         /* a T41NQ's channels count only with TCSR's extra enable bits */
         qdev_prop_set_uint32(DEVICE(&s->tcu), "tcsr-mask", 0x00fffffc);
         qdev_prop_set_bit(DEVICE(&s->tcu), "tcsr-gated", true);
+        /* and stand at 0xffff with TCSR bit 23 */
+        qdev_prop_set_bit(DEVICE(&s->tcu), "chn-hold", true);
         /* and drop a write to TCNT while its channel is stopped */
         qdev_prop_set_uint32(DEVICE(&s->tcu), "stop-drops", 0x4);
     } else if (!strcmp(ingenic_t40_find_variant(s->soc_variant)->name,
