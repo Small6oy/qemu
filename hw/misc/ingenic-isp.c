@@ -275,9 +275,10 @@
  *   frame, else the count, down one a frame, as a T40XP's goes from 1 to 0
  *   after one frame), sets the VIC's second status bit 0 and leaves its
  *   address in +0x380; 1 to +0x308 starts again from slot 0 and clears
- *   +0x380. +0x3a4 counts the VIC's frames. The model's sensors send RGGB
- *   and no second exposure, which a WDR sensor's would take into slots at
- *   +0x340, done at +0x388, second status bit 1.
+ *   +0x380. +0x3a4 counts the VIC's frames. The model's sensors send their
+ *   own Bayer order (image-sensor's bayer) and no second exposure, which
+ *   a WDR sensor's would take into slots at +0x340, done at +0x388, second
+ *   status bit 1.
  *   On a T40XP streaming with its 3D noise reduction on (0x40 bit 13
  *   clear) a capture used up its count with no frame written; tx-isp's
  *   snapraw bypasses that block first. The model captures regardless.
@@ -4556,7 +4557,8 @@ static void isp_wb_gains(IngenicIspState *s, ImageSensorState *sensor,
  *   n << 8 | n == 0, +0x18 the buffer it writes or writes next), each of
  *   the VIC's frames while one is queued, lines +0x1c apart, 16 bits a
  *   sample with the sensor's bits at the top (+0x14 bit 16 set: RAW16) or
- *   8 (the top 8 of them), RGGB. The frame's end raises 0x400b8 bit 4 and
+ *   8 (the top 8 of them), in the sensor's Bayer order. The frame's end
+ *   raises 0x400b8 bit 4 and
  *   0x40028 bit 18 (and, of a raw frame, 0x400a8 bits 3:1 and 27, which
  *   the frame the RDMA gives the core then does not end with), and puts
  *   the buffer on the done FIFO, which a read of +0x20 pops. +0x04 (write
@@ -4650,9 +4652,13 @@ static inline int isp_raw_at(const uint8_t *v, uint32_t fw, uint32_t fh,
     return v[(size_t)y * fw + x];
 }
 
-/* RGGB's colours at (x, y): its own sample, the neighbours' means else */
+/*
+ * The colours at (x, y) of a frame in Bayer order @order: its own sample,
+ * the neighbours' means else
+ */
 static inline void isp_raw_rgb(const uint8_t *v, uint32_t fw, uint32_t fh,
-                               int x, int y, int *r, int *g, int *b)
+                               ImageSensorBayer order, int x, int y, int *r,
+                               int *g, int *b)
 {
     int p = isp_raw_at(v, fw, fh, x, y);
     int hor = (isp_raw_at(v, fw, fh, x - 1, y) +
@@ -4664,7 +4670,7 @@ static inline void isp_raw_rgb(const uint8_t *v, uint32_t fw, uint32_t fh,
                 isp_raw_at(v, fw, fh, x - 1, y + 1) +
                 isp_raw_at(v, fw, fh, x + 1, y + 1)) / 4;
 
-    switch ((y & 1) << 1 | (x & 1)) {
+    switch (image_sensor_bayer_at(order, x, y)) {
     case 0:
         *r = p;
         *g = (hor + ver) / 2;
@@ -4689,19 +4695,21 @@ static inline void isp_raw_rgb(const uint8_t *v, uint32_t fw, uint32_t fh,
 }
 
 /*
- * The picture of a raw frame's top 8 bits @v8 (@fw x @fh, RGGB), planes
- * w x h: each pixel's colours from its RGGB neighbours, in BT.601 as
- * image_sensor_render_bayer() takes the sensor's picture apart, the
- * nearest source pixel for a size other than the frame's
+ * The picture of a raw frame's top 8 bits @v8 (@fw x @fh, Bayer order
+ * @order), planes w x h: each pixel's colours from its neighbours, in
+ * BT.601 as image_sensor_render_bayer() takes the sensor's picture apart,
+ * the nearest source pixel for a size other than the frame's
  */
 static void isp_raw_yuv(const uint8_t *v8, uint32_t fw, uint32_t fh,
-                        uint32_t w, uint32_t h, uint8_t *luma, uint8_t *uv)
+                        ImageSensorBayer order, uint32_t w, uint32_t h,
+                        uint8_t *luma, uint8_t *uv)
 {
     for (uint32_t y = 0; y < h; y++) {
         for (uint32_t x = 0; x < w; x++) {
             int r, g, b;
 
-            isp_raw_rgb(v8, fw, fh, x * fw / w, y * fh / h, &r, &g, &b);
+            isp_raw_rgb(v8, fw, fh, order, x * fw / w, y * fh / h, &r, &g,
+                        &b);
             luma[(size_t)y * w + x] =
                 isp_clamp8(16 + ((66 * r + 129 * g + 25 * b + 128) >> 8));
             if (!(y & 1) && !(x & 1)) {
@@ -4712,6 +4720,20 @@ static void isp_raw_yuv(const uint8_t *v8, uint32_t fw, uint32_t fh,
             }
         }
     }
+}
+
+static ImageSensorState *isp_vic_sensor(IngenicIspState *s, unsigned n);
+
+/*
+ * The Bayer order of the raw frames the core reads in: the sensor's, which
+ * the guest's raw loop wrote back (the core's own order register is not
+ * modelled)
+ */
+static ImageSensorBayer isp_raw_order(IngenicIspState *s)
+{
+    ImageSensorState *sensor = isp_vic_sensor(s, 0);
+
+    return sensor ? sensor->bayer : IMAGE_SENSOR_RGGB;
 }
 
 /* The picture a raw frame in memory makes, planes w x h */
@@ -4740,7 +4762,7 @@ static void isp_raw_scene(IngenicIspState *s, uint32_t w, uint32_t h,
             }
         }
     }
-    isp_raw_yuv(v8, fw, fh, w, h, luma, uv);
+    isp_raw_yuv(v8, fw, fh, isp_raw_order(s), w, h, luma, uv);
 }
 
 static void isp_scene_draw(IngenicIspState *s, ImageSensorState *sensor,
@@ -9795,8 +9817,9 @@ static void isp_mdma_frame(IngenicIspState *s, IngenicIspVic *v,
 }
 
 /*
- * VIC @v's frame as the sensor sent it, to the frame tap: Bayer, RGGB, the
- * sensor's bits at the top of 16 as the raw capture writes them
+ * VIC @v's frame as the sensor sent it, to the frame tap: Bayer, in the
+ * sensor's order, the sensor's bits at the top of 16 as the raw capture
+ * writes them
  */
 static void isp_tap_raw(IngenicIspState *s, IngenicIspVic *v,
                         ImageSensorState *sensor)
@@ -9807,9 +9830,9 @@ static void isp_tap_raw(IngenicIspState *s, IngenicIspVic *v,
     uint16_t keep = ~((1u << (16 - isp_vic_bits(s, v->n))) - 1);
     g_autofree uint16_t *raw = NULL;
     g_autofree char *key = g_strdup_printf("raw-%u", v->n);
+    const char *pixfmt = image_sensor_bayer_pixfmt(sensor->bayer);
 
-    if (!w || !h || !ingenic_frame_tap_ready(&s->tap, key, w, h,
-                                              "bayer_rggb16le")) {
+    if (!w || !h || !ingenic_frame_tap_ready(&s->tap, key, w, h, pixfmt)) {
         return;
     }
     raw = g_malloc((size_t)w * h * 2);
@@ -9817,7 +9840,7 @@ static void isp_tap_raw(IngenicIspState *s, IngenicIspVic *v,
     for (size_t i = 0; i < (size_t)w * h; i++) {
         raw[i] &= keep;
     }
-    ingenic_frame_tap_raw(&s->tap, v->n, w, h, "bayer_rggb16le", raw);
+    ingenic_frame_tap_raw(&s->tap, v->n, w, h, pixfmt, raw);
     ingenic_frame_tap_done(&s->tap);
 }
 
@@ -10076,7 +10099,8 @@ static void isp_raw32_wdma_out(IngenicIspState *s, const uint16_t *raw,
                 for (uint32_t x = 0; x < w; x++) {
                     int r, g, b;
 
-                    isp_raw_rgb(v8, w, h, x, y, &r, &g, &b);
+                    isp_raw_rgb(v8, w, h, isp_raw_order(s), x, y, &r, &g,
+                                &b);
                     stl_le_p(buf0 + ((size_t)y * w + x) * 4,
                              r << 16 | g << 8 | b);
                 }
@@ -10091,7 +10115,7 @@ static void isp_raw32_wdma_out(IngenicIspState *s, const uint16_t *raw,
             rows1 = h / 2;
             p0 = buf0 = g_malloc(n * 3 / 2);
             p1 = buf0 + n;
-            isp_raw_yuv(v8, w, h, w, h, buf0, buf0 + n);
+            isp_raw_yuv(v8, w, h, isp_raw_order(s), w, h, buf0, buf0 + n);
             if (!extract32(ctl, 24, 1)) {
                 for (size_t i = 0; i < n / 2; i += 2) {
                     uint8_t t = buf0[n + i];

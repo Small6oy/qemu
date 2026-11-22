@@ -57,6 +57,35 @@ typedef enum ImageSensorRawPart {
     IMAGE_SENSOR_PART_APICAL,       /* the T10, T20 and T30's files */
 } ImageSensorRawPart;
 
+/*
+ * A Bayer order by its first two lines, numbered as the Apical core's
+ * 0x80018 is: the sample at (x, y) has the colour of position
+ * image_sensor_bayer_at() in an RGGB cell
+ */
+typedef enum ImageSensorBayer {
+    IMAGE_SENSOR_RGGB,          /* R Gr / Gb B */
+    IMAGE_SENSOR_GRBG,          /* Gr R / B Gb */
+    IMAGE_SENSOR_GBRG,          /* Gb B / R Gr */
+    IMAGE_SENSOR_BGGR,          /* B Gb / Gr R */
+} ImageSensorBayer;
+
+/* The position in an RGGB cell (0 R, 1 Gr, 2 Gb, 3 B) of @order's (x, y) */
+static inline unsigned image_sensor_bayer_at(ImageSensorBayer order,
+                                             uint32_t x, uint32_t y)
+{
+    return ((y & 1) << 1 | (x & 1)) ^ order;
+}
+
+/* ffmpeg's name for @order in 16-bit little-endian samples */
+static inline const char *image_sensor_bayer_pixfmt(ImageSensorBayer order)
+{
+    static const char *const pixfmt[] = {
+        "bayer_rggb16le", "bayer_grbg16le", "bayer_gbrg16le", "bayer_bggr16le",
+    };
+
+    return pixfmt[order & 3];
+}
+
 /* Which of a WDR sensor's exposures a picture shows */
 typedef enum ImageSensorExposureSel {
     IMAGE_SENSOR_FUSED,         /* both, as the ISP fuses them */
@@ -106,6 +135,8 @@ struct ImageSensorState {
     char *ircut;                /* thingino.json's pins: one, or two */
     char *irled;                /* GPIOs, or pwmN channels */
     char *scene;                /* a YUV4MPEG2 file or FIFO, else the bars */
+    char *bayer_name;           /* "rggb" to "bggr", else the model's */
+    ImageSensorBayer bayer;     /* the order its raw samples come in */
 
     int scene_fd;
     bool scene_stream;          /* a FIFO: the latest frame, else a loop */
@@ -281,7 +312,7 @@ void image_sensor_render_untinted(ImageSensorState *s, uint64_t frame,
 
 /*
  * The same as the sensor sends it, before any ISP: one colour a pixel in
- * an RGGB Bayer pattern, each full scale at 0xffff
+ * the sensor's Bayer order (bayer), each full scale at 0xffff
  */
 void image_sensor_render_bayer(ImageSensorState *s, uint64_t frame,
                                uint32_t w, uint32_t h, uint16_t *raw);

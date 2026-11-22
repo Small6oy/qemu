@@ -56,6 +56,14 @@
  * in and on the second takes it out, latching. "irled" names the LEDs'
  * GPIOs, or pwmN for a PWM channel, its duty the LED's power.
  *
+ * The raw samples come in the sensor's own Bayer order, whatever order
+ * the guest tells its ISP: the model's is the one the vendor drivers give
+ * for the part's readout unmirrored and unflipped (their mbus_code, the
+ * same on every part they cover but where noted), and "bayer" ("rggb",
+ * "grbg", "gbrg" or "bggr") sets another. A real sensor's order moves with
+ * its own mirror and flip, which drivers follow with their mbus_code; the
+ * model does not read those registers, so its order stays put.
+ *
  * With "object" a white square crosses the ramp and back every 4 seconds;
  * "motion" off stands it and the stripe still. With "stamp" the frame's
  * number and the sensor's input are drawn top left as a row of 32 cells,
@@ -999,6 +1007,7 @@ struct ImageSensorModel {
     } t21, t23, t31, apical, t40, t41;
     /* the line rate the guest's registers give, over the fixed one above */
     const ImageSensorLineTime *line_time;
+    ImageSensorBayer bayer;     /* the drivers' mbus_code, unflipped */
 };
 
 #include "image-sensor-line.c.inc"
@@ -1007,24 +1016,29 @@ static const ImageSensorModel image_sensor_models[] = {
     { "jxh42",   0x30, 1, 0,     { { 0x0a, 0xa0 }, { 0x0b, 0x42 },
                                    { 0x09, 0x81 } },
       0x12, 0x40, true, .exposure = &image_sensor_jxh62_exposure,
-      .line_time = &image_sensor_jxh42_line },
+      .line_time = &image_sensor_jxh42_line,
+      .bayer = IMAGE_SENSOR_GBRG },
     { "jxf22",   0x40, 1, 0,     { { 0x0a, 0x0f }, { 0x0b, 0x22 } },
       .exposure = &image_sensor_soi_exposure,
-      .line_time = &image_sensor_jxf22_line },
+      .line_time = &image_sensor_jxf22_line,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc2232h", 0x30, 2, 0,     { { 0x3107, 0xcb }, { 0x3108, 0x07 },
                                    { 0x3109, 0x01 } },
       0x0100, 0x01,
       .t21 = { 1500, 25 },
-      .line_time = &image_sensor_sc2232h_line },
+      .line_time = &image_sensor_sc2232h_line,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc2336",  0x30, 2, 0,     { { 0x3107, 0xcb }, { 0x3108, 0x3a } },
       0x0100, 0x01, .exposure = &image_sensor_sc2336_exposure,
       .lines = 1440, .lines_fps = 25,
-      .line_time = &image_sensor_sc2336_line },
+      .line_time = &image_sensor_sc2336_line,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc4236",  0x30, 2, 0,     { { 0x3107, 0x32 }, { 0x3108, 0x35 } },
       0x0100, 0x01, .exposure = &image_sensor_sc4236_exposure,
       .lines = 1920, .lines_fps = 25,
       .apical = { 1920, 25 },
-      .line_time = &image_sensor_sc4236_line },
+      .line_time = &image_sensor_sc4236_line,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "gc2053",  0x37, 1, 0xfe,  { { 0xf0, 0x20 }, { 0xf1, 0x53 } },
       .exposure = &image_sensor_gc2053_exposure,
       .lines = 1418, .lines_fps = 30,
@@ -1051,10 +1065,12 @@ static const ImageSensorModel image_sensor_models[] = {
       .t41 = { 1875, 20 },
       .exposure = &image_sensor_gc4023_exposure,
       .line_time = &image_sensor_gc4023_line },
+    /* BGGR: the T41 driver starts it flipped (shvflip 1) and says GRBG */
     { "gc5613",  0x31, 2, 0,     { { 0x03f0, 0x56 }, { 0x03f1, 0x03 } },
       0x0100, 0x01,
       .t41 = { 1750, 30 },
-      .line_time = &image_sensor_gc5603_line },
+      .line_time = &image_sensor_gc5603_line,
+      .bayer = IMAGE_SENSOR_BGGR },
     /* gc2063 and gc4663 answer as gc2053 and gc4653 do */
     { "gc2023",  0x37, 1, 0xfe,  { { 0xf0, 0x20 }, { 0xf1, 0x23 } },
       0xf2, 0x0f },
@@ -1062,7 +1078,8 @@ static const ImageSensorModel image_sensor_models[] = {
       .exposure = &image_sensor_gc2053_exposure,
       .lines = 1418, .lines_fps = 30 },
     { "gc1084",  0x37, 2, 0,     { { 0x03f0, 0x10 }, { 0x03f1, 0x84 } },
-      .lines = 750, .lines_fps = 30 },
+      .lines = 750, .lines_fps = 30,
+      .bayer = IMAGE_SENSOR_GRBG },
     /* the drivers stream with 0x023e = 0x99 and stop with 0x00 */
     { "gc2083",  0x37, 2, 0,     { { 0x03f0, 0x20 }, { 0x03f1, 0x83 } },
       0x023e, 0x80, .exposure = &image_sensor_gc2083_exposure,
@@ -1078,14 +1095,20 @@ static const ImageSensorModel image_sensor_models[] = {
       .t31 = { 1600, 30 },
       .t40 = { 1920, 25 },
       .t41 = { 1920, 25 },
-      .line_time = &image_sensor_gc4653_line },
+      .line_time = &image_sensor_gc4653_line,
+      .bayer = IMAGE_SENSOR_GRBG },
     { "gc4663",  0x29, 2, 0,     { { 0x03f0, 0x46 }, { 0x03f1, 0x53 } },
-      .exposure = &image_sensor_gc4653_exposure },
-    /* gc5603 answers as gc5613 does */
+      .exposure = &image_sensor_gc4653_exposure,
+      .bayer = IMAGE_SENSOR_GRBG },
+    /*
+     * gc5603 answers as gc5613 does; GRBG as the T31, T40 and T41 drivers
+     * give it, BGGR the T32's
+     */
     { "gc5603",  0x31, 2, 0,     { { 0x03f0, 0x56 }, { 0x03f1, 0x03 } },
       .wdr = &image_sensor_gc_wdr,
       .t41 = { 1750, 30 },
-      .line_time = &image_sensor_gc5603_line },
+      .line_time = &image_sensor_gc5603_line,
+      .bayer = IMAGE_SENSOR_GRBG },
     /*
      * 0x3008 reads its reset value, as an imx307 does: older sinfo tables
      * see one
@@ -1097,171 +1120,224 @@ static const ImageSensorModel image_sensor_models[] = {
     { "jxf23",   0x40, 1, 0,     { { 0x0a, 0x0f }, { 0x0b, 0x23 } },
       .exposure = &image_sensor_soi_exposure,
       .lines = 1350, .lines_fps = 25,
-      .line_time = &image_sensor_jxf23_line },
-    { "jxf28",   0x40, 1, 0,     { { 0x0a, 0x0f }, { 0x0b, 0x28 } } },
+      .line_time = &image_sensor_jxf23_line,
+      .bayer = IMAGE_SENSOR_BGGR },
+    { "jxf28",   0x40, 1, 0,     { { 0x0a, 0x0f }, { 0x0b, 0x28 } },
+      .bayer = IMAGE_SENSOR_BGGR },
     { "jxf37",   0x40, 1, 0,     { { 0x0a, 0x0f }, { 0x0b, 0x37 } },
       .exposure = &image_sensor_soi_exposure,
-      .lines = 1350, .lines_fps = 25 },
+      .lines = 1350, .lines_fps = 25,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "jxh62",   0x30, 1, 0,     { { 0x0a, 0xa0 }, { 0x0b, 0x62 } },
       0x12, 0x40, true,
       .lines = 900, .lines_fps = 25,
-      .exposure = &image_sensor_jxh62_exposure },
+      .exposure = &image_sensor_jxh62_exposure,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "jxh63p",  0x40, 1, 0,     { { 0x0a, 0x08 }, { 0x0b, 0x48 } },
       .exposure = &image_sensor_jxh63p_exposure,
       .line_time = &image_sensor_jxh63p_line,
-      .t23 = { 3000, 30 } },
+      .t23 = { 3000, 30 },
+      .bayer = IMAGE_SENSOR_BGGR },
     { "jxk04",   0x40, 1, 0,     { { 0x0a, 0x04 }, { 0x0b, 0x04 } },
-      0x12, 0x40, true },
+      0x12, 0x40, true,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "jxq03",   0x40, 1, 0,     { { 0x0a, 0x05 }, { 0x0b, 0x07 } },
       .lines = 1600, .lines_fps = 25,
-      .exposure = &image_sensor_jxq03_exposure },
+      .exposure = &image_sensor_jxq03_exposure,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "jxq03p",  0x40, 1, 0,     { { 0x0a, 0x08 }, { 0x0b, 0x43 } },
       .exposure = &image_sensor_jxq03_exposure,
-      .lines = 1600, .lines_fps = 25 },
+      .lines = 1600, .lines_fps = 25,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "mis2008", 0x30, 2, 0,     { { 0x3000, 0x20 }, { 0x3001, 0x08 } },
-      .lines = 1350, .lines_fps = 25 },
+      .lines = 1350, .lines_fps = 25,
+      .bayer = IMAGE_SENSOR_GRBG },
     { "mis20c1", 0x30, 2, 0,     { { 0x3000, 0x20 }, { 0x3001, 0xc1 } },
-      .exposure = &image_sensor_mis20c1_exposure },
+      .exposure = &image_sensor_mis20c1_exposure,
+      .bayer = IMAGE_SENSOR_GRBG },
     /* the T32 drivers check 0x05 as well */
     { "os02b10", 0x3c, 1, 0xfd,  { { 0x02, 0x23 }, { 0x03, 0x08 } },
       .exposure = &image_sensor_os02b10_exposure,
-      .t21 = { 1361, 25 } },
+      .t21 = { 1361, 25 },
+      .bayer = IMAGE_SENSOR_BGGR },
+    /* BGGR but for one T31 mode's GBRG */
     { "os02g10", 0x3c, 1, 0xfd,  { { 0x02, 0x56 }, { 0x03, 0x02 },
                                    { 0x04, 0x47 } },
       .exposure = &image_sensor_os02g10_exposure,
-      .lines = 1330, .lines_fps = 25 },
+      .lines = 1330, .lines_fps = 25,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "os02n10", 0x3c, 1, 0xfd,  { { 0x02, 0x53 }, { 0x03, 0x02 },
                                    { 0x04, 0x4e }, { 0x05, 0x10 } },
-      .t23 = { 1109, 30 } },
+      .t23 = { 1109, 30 },
+      .bayer = IMAGE_SENSOR_BGGR },
     { "os03b10", 0x3c, 1, 0xfd,  { { 0x02, 0x53 }, { 0x03, 0x03 },
                                    { 0x04, 0x42 } },
       .exposure = &image_sensor_os03b10_exposure,
-      .lines = 1590, .lines_fps = 25 },
+      .lines = 1590, .lines_fps = 25,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "os04d10", 0x3c, 1, 0xfd,  { { 0x02, 0x53 }, { 0x03, 0x04 },
-                                   { 0x04, 0x44 }, { 0x05, 0x10 } } },
+                                   { 0x04, 0x44 }, { 0x05, 0x10 } },
+      .bayer = IMAGE_SENSOR_BGGR },
     { "os05a10", 0x36, 2, 0,     { { 0x300a, 0x53 }, { 0x300b, 0x05 },
                                    { 0x300c, 0x41 } },
-      0x0100, 0x01 },
+      0x0100, 0x01,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "os08a10", 0x36, 2, 0,     { { 0x300a, 0x53 }, { 0x300b, 0x08 },
                                    { 0x300c, 0x41 } },
-      0x0100, 0x01 },
+      0x0100, 0x01,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "os08c10", 0x36, 2, 0,     { { 0x300a, 0x53 }, { 0x300b, 0x08 },
                                    { 0x300c, 0x43 } },
-      0x0100, 0x01, .exposure = &image_sensor_os08c10_exposure },
+      0x0100, 0x01, .exposure = &image_sensor_os08c10_exposure,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "ov2710",  0x36, 2, 0,     { { 0x300a, 0x27 }, { 0x300b, 0x10 } },
-      0x4202, 0x0f, true },
+      0x4202, 0x0f, true,
+      .bayer = IMAGE_SENSOR_BGGR },
     /* 0x04 is the revision, which the driver takes as 0x06 or 0x07 */
     { "ov2735b", 0x3c, 1, 0xfd,  { { 0x02, 0x27 }, { 0x03, 0x35 },
                                    { 0x04, 0x07 } },
       0x36, 0x01, true, .exposure = &image_sensor_ov2735b_exposure,
-      .t21 = { 1595, 25 }, .line_time = &image_sensor_ov2735b_line },
+      .t21 = { 1595, 25 }, .line_time = &image_sensor_ov2735b_line,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "ov9712",  0x30, 1, 0,     { { 0x0a, 0x97 }, { 0x0b, 0x11 } },
-      0x09, 0x10, true, .line_time = &image_sensor_ov9712_line },
+      0x09, 0x10, true, .line_time = &image_sensor_ov9712_line,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "ov9732",  0x36, 2, 0,     { { 0x300a, 0x97 }, { 0x300b, 0x32 } },
       0x0100, 0x01,
-      .t23 = { 974, 25 } },
+      .t23 = { 974, 25 },
+      .bayer = IMAGE_SENSOR_BGGR },
     { "ov9750",  0x36, 2, 0,     { { 0x300b, 0x97 }, { 0x300c, 0x50 } },
-      0x0100, 0x01 },
+      0x0100, 0x01,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "ps5250",  0x48, 1, 0xef,  { { 0x00, 0x52 }, { 0x01, 0x50 } },
-      .exposure = &image_sensor_ps5250_exposure },
+      .exposure = &image_sensor_ps5250_exposure,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "ps5260",  0x48, 1, 0xef,  { { 0x00, 0x52 }, { 0x01, 0x60 } },
       .exposure = &image_sensor_ps5260_exposure,
       .t21 = { 1125, 15 },
-      .t23 = { 1125, 15 } },
+      .t23 = { 1125, 15 },
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc1235",  0x30, 2, 0,     { { 0x3107, 0x12 }, { 0x3108, 0x35 } },
-      0x0100, 0x01, .exposure = &image_sensor_sc1235_exposure },
+      0x0100, 0x01, .exposure = &image_sensor_sc1235_exposure,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc1a4t",  0x30, 2, 0,     { { 0x3107, 0xda }, { 0x3108, 0x4d } },
       0x0100, 0x01,
       .t23 = { 3000, 15 },
-      .exposure = &image_sensor_sc1a4t_exposure },
+      .exposure = &image_sensor_sc1a4t_exposure,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc2135",  0x30, 2, 0,     { { 0x3107, 0x21 }, { 0x3108, 0x35 } },
-      0x0100, 0x01 },
+      0x0100, 0x01,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc2232",  0x30, 2, 0,     { { 0x3107, 0x22 }, { 0x3108, 0x32 },
                                    { 0x3109, 0x01 } },
       0x0100, 0x01,
-      .t21 = { 1500, 25 } },
+      .t21 = { 1500, 25 },
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc2235",  0x30, 2, 0,     { { 0x3107, 0x22 }, { 0x3108, 0x35 } },
       0x0100, 0x01,
       .t21 = { 1350, 25 },
       .t23 = { 1440, 25 },
-      .exposure = &image_sensor_sc2235_exposure },
+      .exposure = &image_sensor_sc2235_exposure,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc223a",  0x30, 2, 0,     { { 0x3107, 0xcb }, { 0x3108, 0x3e } },
       0x0100, 0x01, .exposure = &image_sensor_sc223a_exposure,
       .lines = 1440, .lines_fps = 25,
-      .t23 = { 1440, 30 } },
+      .t23 = { 1440, 30 },
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc2300",  0x30, 2, 0,     { { 0x3107, 0x23 }, { 0x3108, 0x00 } },
       0x0100, 0x01, .exposure = &image_sensor_sc2300_exposure,
-      .t21 = { 2250, 25 } },
+      .t21 = { 2250, 25 },
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc231hai", 0x30, 2, 0,     { { 0x3107, 0xcb }, { 0x3108, 0x6a } },
-      0x0100, 0x01 },
+      0x0100, 0x01,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc2310",  0x30, 2, 0,     { { 0x3107, 0x23 }, { 0x3108, 0x11 } },
       0x0100, 0x01,
-      .t23 = { 1125, 30 } },
+      .t23 = { 1125, 30 },
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc2331",  0x30, 2, 0,     { { 0x3107, 0xcb }, { 0x3108, 0x5c } },
       0x0100, 0x01, .exposure = &image_sensor_sc2331_exposure,
-      .t23 = { 1130, 30 } },
+      .t23 = { 1130, 30 },
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc2332",  0x30, 2, 0,     { { 0x3107, 0xcb }, { 0x3108, 0x17 } },
       0x0100, 0x01,
       .lines = 1350, .lines_fps = 25,
-      .exposure = &image_sensor_sc3235_exposure },
+      .exposure = &image_sensor_sc3235_exposure,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc2336p", 0x30, 2, 0,     { { 0x3107, 0x9b }, { 0x3108, 0x3a } },
       0x0100, 0x01, .exposure = &image_sensor_sc2336_exposure,
       .lines = 2400, .lines_fps = 15,
-      .line_time = &image_sensor_sc2336p_line },
+      .line_time = &image_sensor_sc2336p_line,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc301iot", 0x30, 2, 0,     { { 0x3107, 0xcc }, { 0x3108, 0x40 } },
       0x0100, 0x01, .exposure = &image_sensor_sc301iot_exposure,
-      .lines = 1920, .lines_fps = 25 },
+      .lines = 1920, .lines_fps = 25,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc3235",  0x30, 2, 0,     { { 0x3107, 0xcc }, { 0x3108, 0x05 } },
       0x0100, 0x01,
       .lines = 1620, .lines_fps = 25,
-      .exposure = &image_sensor_sc3235_exposure },
+      .exposure = &image_sensor_sc3235_exposure,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc3332",  0x30, 2, 0,     { { 0x3107, 0xcc }, { 0x3108, 0x44 } },
-      0x0100, 0x01, .exposure = &image_sensor_sc3332_exposure },
+      0x0100, 0x01, .exposure = &image_sensor_sc3332_exposure,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc3335",  0x30, 2, 0,     { { 0x3107, 0xcc }, { 0x3108, 0x1a } },
       0x0100, 0x01,
       .lines = 1632, .lines_fps = 25,
       .t23 = { 1620, 25 },
-      .exposure = &image_sensor_sc3335_exposure },
+      .exposure = &image_sensor_sc3335_exposure,
+      .bayer = IMAGE_SENSOR_BGGR },
     /* sc3338 answers as sc3336 does */
     { "sc3336",  0x30, 2, 0,     { { 0x3107, 0xcc }, { 0x3108, 0x41 } },
       0x0100, 0x01,
       .lines = 1632, .lines_fps = 25,
-      .exposure = &image_sensor_sc3336_exposure },
+      .exposure = &image_sensor_sc3336_exposure,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc3338",  0x30, 2, 0,     { { 0x3107, 0xcc }, { 0x3108, 0x41 } },
       0x0100, 0x01,
       .lines = 1632, .lines_fps = 25,
       .t41 = { 1350, 30 },
       .exposure = &image_sensor_sc3336_exposure,
-      .line_time = &image_sensor_sc3338_line },
+      .line_time = &image_sensor_sc3338_line,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc401ai", 0x30, 2, 0,     { { 0x3107, 0xcd }, { 0x3108, 0x2e } },
       0x0100, 0x01, .exposure = &image_sensor_sc401ai_exposure,
       .lines = 1800, .lines_fps = 25,
-      .line_time = &image_sensor_sc401ai_line },
+      .line_time = &image_sensor_sc401ai_line,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc4336",  0x30, 2, 0,     { { 0x3107, 0xdc }, { 0x3108, 0x42 } },
       0x0100, 0x01,
       .lines = 1500, .lines_fps = 30,
-      .exposure = &image_sensor_sc4336_exposure },
+      .exposure = &image_sensor_sc4336_exposure,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc4336p", 0x30, 2, 0,     { { 0x3107, 0x9c }, { 0x3108, 0x42 } },
       0x0100, 0x01,
       .lines = 1500, .lines_fps = 30,
       .t41 = { 1535, 30 },
       .exposure = &image_sensor_sc4336_exposure,
-      .line_time = &image_sensor_sc4336p_line },
+      .line_time = &image_sensor_sc4336p_line,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc500ai", 0x30, 2, 0,     { { 0x3107, 0xce }, { 0x3108, 0x1f } },
       0x0100, 0x01,
-      .lines = 1980, .lines_fps = 25 },
+      .lines = 1980, .lines_fps = 25,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc5235",  0x30, 2, 0,     { { 0x3107, 0x52 }, { 0x3108, 0x35 } },
       0x0100, 0x01, .exposure = &image_sensor_sc5235_exposure,
-      .t23 = { 2666, 15 } },
+      .t23 = { 2666, 15 },
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc5336",  0x30, 2, 0,     { { 0x3107, 0xce }, { 0x3108, 0x50 } },
-      0x0100, 0x01, .exposure = &image_sensor_sc5336_exposure },
+      0x0100, 0x01, .exposure = &image_sensor_sc5336_exposure,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc8238",  0x30, 2, 0,     { { 0x3107, 0x82 }, { 0x3108, 0x35 } },
-      0x0100, 0x01 },
+      0x0100, 0x01,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc830ai", 0x30, 2, 0,     { { 0x3107, 0xc1 }, { 0x3108, 0x43 } },
       0x0100, 0x01,
-      .line_time = &image_sensor_sc830ai_line },
+      .line_time = &image_sensor_sc830ai_line,
+      .bayer = IMAGE_SENSOR_BGGR },
     { "sc835hai", 0x30, 2, 0,     { { 0x3107, 0xc1 }, { 0x3108, 0x70 } },
-      0x0100, 0x01 },
+      0x0100, 0x01,
+      .bayer = IMAGE_SENSOR_BGGR },
 };
 
 /* 75% colour bars, BT.601 limited range: Y, Cb, Cr */
@@ -3188,7 +3264,7 @@ void image_sensor_render_planes(ImageSensorState *s, uint64_t frame,
 
 /*
  * The picture's limited-range BT.601 YUV back to RGB, each pixel keeping
- * the colour its place in the Bayer pattern gives it
+ * the colour its place in the sensor's Bayer order gives it
  */
 void image_sensor_render_bayer(ImageSensorState *s, uint64_t frame,
                                uint32_t w, uint32_t h, uint16_t *raw)
@@ -3214,7 +3290,7 @@ void image_sensor_render_bayer(ImageSensorState *s, uint64_t frame,
             double v = (x | 1) < w ? c[x | 1] - 128 : 0;
             double rgb;
 
-            switch ((y & 1) << 1 | (x & 1)) {
+            switch (image_sensor_bayer_at(s->bayer, x, y)) {
             case 0:
                 rgb = l + 1.596 * v;
                 break;
@@ -3372,6 +3448,24 @@ static void image_sensor_realize(DeviceState *dev, Error **errp)
     }
     if (!i2c->address) {
         i2c->address = s->model->addr;
+    }
+    s->bayer = s->model->bayer;
+    if (s->bayer_name) {
+        static const char *const orders[] = { "rggb", "grbg", "gbrg",
+                                              "bggr" };
+        int i;
+
+        for (i = 0; i < ARRAY_SIZE(orders); i++) {
+            if (!g_ascii_strcasecmp(s->bayer_name, orders[i])) {
+                break;
+            }
+        }
+        if (i == ARRAY_SIZE(orders)) {
+            error_setg(errp, "image-sensor: bayer must be rggb, grbg, gbrg "
+                       "or bggr");
+            return;
+        }
+        s->bayer = i;
     }
     if (!s->fps) {
         error_setg(errp, "image-sensor: fps must be at least 1");
@@ -3670,6 +3764,7 @@ static const Property image_sensor_props[] = {
     DEFINE_PROP_STRING("ircut", ImageSensorState, ircut),
     DEFINE_PROP_STRING("irled", ImageSensorState, irled),
     DEFINE_PROP_STRING("scene", ImageSensorState, scene),
+    DEFINE_PROP_STRING("bayer", ImageSensorState, bayer_name),
 };
 
 static void image_sensor_class_init(ObjectClass *oc, const void *data)
