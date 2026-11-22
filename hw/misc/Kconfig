@@ -459,3 +459,7 @@ config TMI815X
     bool
     depends on INGENIC_SSI
     default y if INGENIC_SSI
+
+config MS32006
+    bool
+    depends on I2C

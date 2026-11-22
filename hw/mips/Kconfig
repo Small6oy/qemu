@@ -148,6 +148,7 @@ config INGENIC_T31
     imply TMAG5273
     imply LTR308ALS
     imply WYZE_WCO2_MCU
+    imply MS32006
     select USB_DWC2
     select INGENIC_RTC
     select INGENIC_DTRNG
@@ -266,6 +267,7 @@ config INGENIC_T40
     imply TMAG5273
     imply LTR308ALS
     imply WYZE_WCO2_MCU
+    imply MS32006
     select USB_DWC2
     select INGENIC_TCU
     select INGENIC_DTRNG
