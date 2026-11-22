@@ -444,3 +444,8 @@ source macio/Kconfig
 
 config QCOM_QDSP6SS_CLK
     bool
+
+config GPIO_STEPPER
+    bool
+    depends on INGENIC_GPIO
+    default y if INGENIC_GPIO

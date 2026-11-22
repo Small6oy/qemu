@@ -220,7 +220,7 @@ qtests_mipsel = qtests_mips + \
     'ingenic-mxu2-test', 'ingenic-mxu3-test',
     'ingenic-pdma-test',
     'ingenic-hash-test', 'ingenic-rsa-test',
-    'ingenic-dtrng-test', 'ingenic-gpio-i2c-test', 'ingenic-i2c-periph-test', 'ingenic-t40-nor-test',
+    'ingenic-dtrng-test', 'ingenic-gpio-i2c-test', 'ingenic-gpio-stepper-test', 'ingenic-i2c-periph-test', 'ingenic-t40-nor-test',
     'ingenic-lzma-uimage-test', 'ingenic-lzma-irq-test', 'ingenic-sfc-nor-test',
     'tmag5273-test', 'ltr308als-test'] : [])
 qtests_mips64 = qtests_mips
