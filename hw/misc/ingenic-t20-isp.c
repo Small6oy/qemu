@@ -38,8 +38,11 @@
  *   width (libimp's PIX_FMT_RAW after IMP_ISP_Tuning_SetISPBypass,
  *   sample-Snap-Raw): a T20X's is the DS1 writer, a T10L's the FR writer.
  *   It puts out the sensor's samples as they come, before any black level
- *   or gain: one colour a pixel in the Bayer order of 0x80018 (0 starts
- *   R Gr / Gb B, 1 Gr R / B Gb, 2 Gb B / R Gr, 3 B Gb / Gr R), the
+ *   or gain: one colour a pixel in the sensor's own Bayer order, whatever
+ *   0x80018 says (it tells the core the order, 0 R Gr / Gb B, 1 Gr R /
+ *   B Gb, 2 Gb B / R Gr, 3 B Gb / Gr R, as the driver takes it from the
+ *   sensor's mbus_code; a T20X and a T10L, both BGGR, put out the same
+ *   raw frame for any value of it), the
  *   sensor's 10 bits left justified in 16, little-endian, the low 6 bits
  *   0. Lines are +0x20 bytes apart with nothing written between them, and
  *   the writer's size (+0x4) is what it takes of the frame, from its top
@@ -500,8 +503,8 @@ static void t20_isp_raw_ratios(ImageSensorState *sensor, uint32_t ratio[3])
 
 /*
  * The sensor's frame as the bypassed core puts it out: the samples in the
- * Bayer order of 0x80018, the colour of each in @order's (y & 1) * 2 + (x &
- * 1), 10 bits in linear light, as the AWB statistics see the raw picture
+ * sensor's Bayer order, whatever 0x80018 says, 10 bits in linear light, as
+ * the AWB statistics see the raw picture
  */
 static void t20_isp_raw_frame(IngenicT20IspState *s, ImageSensorState *sensor,
                               uint32_t w, uint32_t h, uint16_t *raw)
@@ -509,7 +512,7 @@ static void t20_isp_raw_frame(IngenicT20IspState *s, ImageSensorState *sensor,
     static const uint8_t bayer[4][4] = {
         { 0, 1, 1, 2 }, { 1, 0, 2, 1 }, { 1, 2, 0, 1 }, { 2, 1, 1, 0 },
     };
-    const uint8_t *order = bayer[R(CORE_BAYER) & 3];
+    const uint8_t *order = bayer[sensor->bayer];
     uint32_t ratio[3];
     g_autofree uint8_t *luma = g_malloc((size_t)w * h);
     g_autofree uint8_t *uv = g_malloc((size_t)w * (h / 2));
@@ -598,21 +601,18 @@ static void t20_isp_temper_picture(IngenicT20IspState *s, uint8_t *luma,
 
 /*
  * The frame as the sensor sent it, for the frame tap: the samples as the
- * raw output has them (10 bits at the top of 16), in the Bayer order the
- * core is set to
+ * raw output has them (10 bits at the top of 16), in the sensor's Bayer
+ * order
  */
 static void t20_isp_tap_raw(IngenicT20IspState *s, ImageSensorState *sensor)
 {
-    static const char *const pixfmt[4] = {
-        "bayer_rggb16le", "bayer_grbg16le", "bayer_gbrg16le",
-        "bayer_bggr16le",
-    };
+    const char *pixfmt = image_sensor_bayer_pixfmt(sensor->bayer);
     uint32_t w = R(CORE_WIDTH) & 0xfffe, h = R(CORE_HEIGHT) & 0xfffe;
     g_autofree uint16_t *raw = NULL;
 
     if (!ingenic_frame_tap_on(&s->tap) || !w || !h ||
         !ingenic_frame_tap_ready(&s->tap, "raw-0", w, h,
-                                 pixfmt[R(CORE_BAYER) & 3])) {
+                                 pixfmt)) {
         return;
     }
     raw = g_new(uint16_t, (size_t)w * h);
@@ -620,7 +620,7 @@ static void t20_isp_tap_raw(IngenicT20IspState *s, ImageSensorState *sensor)
     for (size_t i = 0; i < (size_t)w * h; i++) {
         raw[i] <<= 16 - T20_RAW_BITS;
     }
-    ingenic_frame_tap_raw(&s->tap, 0, w, h, pixfmt[R(CORE_BAYER) & 3], raw);
+    ingenic_frame_tap_raw(&s->tap, 0, w, h, pixfmt, raw);
     ingenic_frame_tap_done(&s->tap);
 }
 
