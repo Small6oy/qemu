@@ -36,14 +36,25 @@
  *
  * An enabled channel in a drive mode moves one step per "step-us" while the
  * chip is enabled, until the counter equals the count to run to, then
- * holds. The TMI8152's counter counts the steps made in either direction
- * and its driver writes the count as it is; the TMI8160's counts up
- * clockwise and down counter-clockwise, and its driver writes 65536 minus
- * the count for counter-clockwise: that is how the two are modelled, from
- * the drivers (the clock dividers and the step-us time per step are not
- * derived from them). Writing the counter restarts the count. The
- * "position-1" and "position-2" properties are the rotors' net steps,
- * clockwise positive.
+ * holds; the TMI8152's mode 3 (continuous rotation) has no count to run
+ * to. The counter counts up clockwise and down counter-clockwise, 13 bits
+ * on the TMI8152 and 16 on the TMI8160: a third driver, written from
+ * reverse engineering (github.com/sstepansky/tmi8152-spi-dev, GPLv2, used
+ * as a cross-check of behaviour only), sets a counter-clockwise target as
+ * 0x2000 minus the steps, writes 0 to 0x08 and 0x09 to clear the counters,
+ * reads the chip ID from 0x00 and 0x01 (0x8150), the position from 0x08
+ * and 0x09 (13 bits, read negative above 0x1000), starts a channel by
+ * writing 0x82 (mode 2, start) to its control register after the
+ * direction (0x75 or 0x7a: step division 7, clockwise or not), speed and
+ * target, and enables the chip with 0x03 then 0x8b in 0x02 and disables it
+ * with 0xc1 (bit 6: the low-power mode of the TMI8150B's GLPEN). The SDK's
+ * sample_motor4, which writes the count as it is for either direction,
+ * does not agree about counter-clockwise; the datasheet and that driver
+ * come first. The TMI8160's ID is taken to sit where the TMI8152's does.
+ * The clock dividers and the step-us time per step are not derived from
+ * the drivers. Writing the counter restarts the count. The "position-1"
+ * and "position-2" properties are the rotors' net steps, clockwise
+ * positive.
  *
  * Wiring, from the T23 RD_T23_EEL V1.1 schematic (TMI8153) and the PIKE's
  * note that such a driver can replace the MS32006: CS, SCLK, SDI and SDO on
@@ -75,16 +86,19 @@ OBJECT_DECLARE_TYPE(Tmi815xState, Tmi815xClass, TMI815X)
 typedef struct Tmi815xLayout {
     uint8_t ctl, mode, cnt, set, stride, ircut;
     uint8_t cw, ccw;
-    bool signed_count;
+    uint16_t id, cnt_mask;
+    uint8_t mode_cont;
 } Tmi815xLayout;
 
 static const Tmi815xLayout lay8152 = {
     .ctl = 0x04, .mode = 0x05, .cnt = 0x08, .set = 0x0b, .stride = 0x10,
     .ircut = 0x11, .cw = 0x5, .ccw = 0xa,
+    .id = 0x8150, .cnt_mask = 0x1fff, .mode_cont = 0x3,
 };
 static const Tmi815xLayout lay8153 = {
     .ctl = 0x20, .mode = 0x22, .cnt = 0x2a, .set = 0x2e, .stride = 0x20,
-    .ircut = 0x10, .cw = 0x1, .ccw = 0x2, .signed_count = true,
+    .ircut = 0x10, .cw = 0x1, .ccw = 0x2,
+    .id = 0x8160, .cnt_mask = 0xffff,
 };
 
 struct Tmi815xClass {
@@ -120,8 +134,11 @@ static bool tmi_running(const Tmi815xState *s, int c)
 {
     const Tmi815xLayout *l = TMI815X_GET_CLASS(s)->lay;
 
-    return (s->reg[0x02] & 0x80) && (s->reg[l->ctl + c * l->stride] & 0x80) &&
-           tmi_dir(s, c) && s->ch[c].count != s->ch[c].target;
+    uint8_t ctl = s->reg[l->ctl + c * l->stride];
+    bool cont = l->mode_cont && (ctl & 0x7f) == l->mode_cont;
+
+    return (s->reg[0x02] & 0xc0) == 0x80 && (ctl & 0x80) && tmi_dir(s, c) &&
+           (cont || s->ch[c].count != s->ch[c].target);
 }
 
 static void tmi_kick(Tmi815xState *s, int c)
@@ -146,7 +163,7 @@ static void tmi_tick(Tmi815xState *s, int c)
         return;
     }
     ch->pos += dir;
-    ch->count += (l->signed_count && dir < 0) ? -1 : 1;
+    ch->count = (ch->count + dir) & l->cnt_mask;
     s->reg[l->cnt + c * l->stride] = ch->count;
     s->reg[l->cnt + c * l->stride + 1] = ch->count >> 8;
     trace_tmi815x_move(c + 1, ch->pos, ch->count, ch->target);
@@ -170,7 +187,8 @@ static void tmi_sync(Tmi815xState *s)
     for (int c = 0; c < 2; c++) {
         unsigned o = c * l->stride;
 
-        s->ch[c].target = s->reg[l->set + o] | s->reg[l->set + o + 1] << 8;
+        s->ch[c].target = (s->reg[l->set + o] | s->reg[l->set + o + 1] << 8) &
+                          l->cnt_mask;
         tmi_kick(s, c);
     }
 }
@@ -198,7 +216,7 @@ static void tmi_write(Tmi815xState *s, unsigned addr, uint8_t v)
         unsigned o = l->cnt + c * l->stride;
 
         if (addr == o || addr == o + 1) {
-            s->ch[c].count = s->reg[o] | s->reg[o + 1] << 8;
+            s->ch[c].count = (s->reg[o] | s->reg[o + 1] << 8) & l->cnt_mask;
         }
     }
     if (addr == 0x02 && !(v & 0x80)) {
@@ -215,6 +233,9 @@ static uint8_t tmi_read(Tmi815xState *s, unsigned addr)
 {
     const Tmi815xLayout *l = TMI815X_GET_CLASS(s)->lay;
 
+    if (addr < 2) {
+        return l->id >> (8 * (1 - addr));
+    }
     for (int c = 0; c < 2; c++) {
         unsigned o = l->cnt + c * l->stride;
 

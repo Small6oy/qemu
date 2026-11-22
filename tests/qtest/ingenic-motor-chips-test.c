@@ -413,14 +413,27 @@ static void test_tmi8152(void)
     g_assert_cmphex(tmi_read(qts, 0x08), ==, 20);
     g_assert_cmpint(prop(qts, "tmi", "position-2"), ==, 0);
 
-    /* channel 2 counter-clockwise: the count is of steps, not signed */
+    /* channel 2 counter-clockwise: 13 bits, the target 0x2000 less the steps */
     tmi_write(qts, 0x14, 0x07);
     tmi_write(qts, 0x15, 7 << 4 | 0xa);
-    tmi_write(qts, 0x1b, 5);
+    tmi_write(qts, 0x1b, 0xfb);
+    tmi_write(qts, 0x1c, 0x1f);
     tmi_write(qts, 0x14, 0x87);
     qtest_clock_step(qts, 2 * MS);
     g_assert_cmpint(prop(qts, "tmi", "position-2"), ==, -5);
-    g_assert_cmphex(tmi_read(qts, 0x18), ==, 5);
+    g_assert_cmphex(tmi_read(qts, 0x18), ==, 0xfb);
+    g_assert_cmphex(tmi_read(qts, 0x19), ==, 0x1f);
+
+    /* the chip ID, and the low-power bit stopping a channel */
+    g_assert_cmphex(tmi_read(qts, 0x00), ==, 0x81);
+    g_assert_cmphex(tmi_read(qts, 0x01), ==, 0x50);
+    tmi_write(qts, 0x02, 0xc1);
+    tmi_write(qts, 0x0b, 40);
+    qtest_clock_step(qts, 2 * MS);
+    g_assert_cmpint(prop(qts, "tmi", "position-1"), ==, 20);
+    tmi_write(qts, 0x02, 0x8b);
+    qtest_clock_step(qts, 5 * MS);
+    g_assert_cmpint(prop(qts, "tmi", "position-1"), ==, 40);
 
     /* the IR-cut bridge: IREN, IRINA and IRINB as the TMI8150B's table */
     tmi_write(qts, 0x11, 0x86);
@@ -437,6 +450,57 @@ static void test_tmi8152(void)
     /* a disabled channel stands, and the chip reset clears the counters */
     tmi_write(qts, 0x02, 0x03);
     g_assert_cmphex(tmi_read(qts, 0x08), ==, 0);
+    qtest_quit(qts);
+}
+
+/*
+ * The sequence of a reverse engineered driver for the TMI8152
+ * (sstepansky/tmi8152-spi-dev, cross-check only): the ID, init and enable
+ * through 0x02, a counter cleared before each move, the direction 0x75 or
+ * 0x7a, the target 13 bits (0x2000 less the steps counter-clockwise), mode
+ * 2 started with 0x82, the position read back from 0x08 and 0x09
+ */
+static void test_tmi8152_driver(void)
+{
+    QTestState *qts = tmi_init("tmi8152");
+
+    g_assert_cmphex(tmi_read(qts, 0x00) << 8 | tmi_read(qts, 0x01), ==,
+                    0x8150);
+    tmi_write(qts, 0x02, 0x03);
+    tmi_write(qts, 0x02, 0x8b);
+    tmi_write(qts, 0x08, 0);
+    tmi_write(qts, 0x09, 0);
+    tmi_write(qts, 0x04, 0x02);
+    tmi_write(qts, 0x05, 0x75);
+    tmi_write(qts, 0x06, 0x40);
+    tmi_write(qts, 0x04, 0x02);
+    tmi_write(qts, 0x0b, 100);
+    tmi_write(qts, 0x0c, 0);
+    tmi_write(qts, 0x04, 0x82);
+    qtest_clock_step(qts, 15 * MS);
+    g_assert_cmpint(prop(qts, "tmi", "position-1"), ==, 100);
+    g_assert_cmphex(tmi_read(qts, 0x08), ==, 100);
+    g_assert_cmphex(tmi_read(qts, 0x09), ==, 0);
+
+    /* back 40 (to the right): cleared, 0x7a, 0x2000 - 40 */
+    tmi_write(qts, 0x08, 0);
+    tmi_write(qts, 0x09, 0);
+    tmi_write(qts, 0x04, 0x02);
+    tmi_write(qts, 0x05, 0x7a);
+    tmi_write(qts, 0x0b, (0x2000 - 40) & 0xff);
+    tmi_write(qts, 0x0c, (0x2000 - 40) >> 8);
+    tmi_write(qts, 0x04, 0x82);
+    qtest_clock_step(qts, 10 * MS);
+    g_assert_cmpint(prop(qts, "tmi", "position-1"), ==, 60);
+    g_assert_cmphex(tmi_read(qts, 0x08), ==, (0x2000 - 40) & 0xff);
+    g_assert_cmphex(tmi_read(qts, 0x09), ==, (0x2000 - 40) >> 8);
+
+    /* continuous rotation, mode 3, runs on until the start bit is cleared */
+    tmi_write(qts, 0x05, 0x75);
+    tmi_write(qts, 0x04, 0x83);
+    qtest_clock_step(qts, 5 * MS);
+    tmi_write(qts, 0x04, 0x03);
+    g_assert_cmpint(prop(qts, "tmi", "position-1"), >, 60 + 40);
     qtest_quit(qts);
 }
 
@@ -542,6 +606,7 @@ int main(int argc, char **argv)
 
     qtest_add_func("motor-chips/ms419xx", test_ms419xx);
     qtest_add_func("motor-chips/tmi8152", test_tmi8152);
+    qtest_add_func("motor-chips/tmi8152-driver", test_tmi8152_driver);
     qtest_add_data_func("motor-chips/tmi8160", "tmi8160", test_tmi8160);
     qtest_add_data_func("motor-chips/tmi8153", "tmi8153", test_tmi8160);
     qtest_add_func("motor-chips/ms32006", test_ms32006);
