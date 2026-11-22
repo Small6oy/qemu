@@ -597,3 +597,8 @@ ingenic_a1_sfc_nor(uint32_t cmd, uint32_t addr, uint32_t len, uint32_t glb) "NOR
 gpio_stepper_move(const char *id, int pos, int idx, int step) "%s: position %d, pattern %d, step %d"
 gpio_stepper_stall(const char *id, int pos, int step) "%s: stalled at %d against the stop, step %d"
 gpio_stepper_limit(const char *id, int pos, int min, int max) "%s: position %d, min switch %d, max switch %d"
+
+# ms419xx.c
+ms419xx_write(unsigned reg, unsigned val) "reg 0x%02x = 0x%04x"
+ms419xx_move(int ch, int64_t pos, int down, int psum) "channel %d: position %" PRId64 ", down %d, %d micro steps"
+ms419xx_stall(int ch, int64_t pos) "channel %d: stalled at %" PRId64

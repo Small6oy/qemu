@@ -449,3 +449,8 @@ config GPIO_STEPPER
     bool
     depends on INGENIC_GPIO
     default y if INGENIC_GPIO
+
+config MS419XX
+    bool
+    depends on INGENIC_SSI
+    default y if INGENIC_SSI
