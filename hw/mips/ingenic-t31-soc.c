@@ -375,6 +375,56 @@ static void ingenic_t31_clock_gates(const T31Variant *v, uint32_t *gr)
 }
 
 /*
+ * The CPM as thingino's U-Boot leaves it, read back at its prompt on a T10L,
+ * T20X, T21N, T23N, T30X and T31X: CPCCR, DDRCDR, MACCDR, MSC0CDR and SSICDR
+ * for the variants whose PLLs (CPAPCR and CPMPCR, lock bit apart) are those
+ * its firmware sets. A variant with no row keeps the reset values.
+ */
+typedef struct {
+    uint32_t apll, mpll;
+    uint32_t cpccr, ddrcdr, maccdr, msc0cdr, ssicdr;
+} T31UbootClocks;
+
+static const T31UbootClocks t31_uboot_clocks[] = {
+    { 0x03b08909, 0x06405109, 0x9a7b5510, 0xa0000002,
+      0xa0000017, 0x2000000e, 0xe0000017 },     /* T10L */
+    { 0x04708909, 0x06405109, 0x9a7b5510, 0xa0000002,
+      0xa0000017, 0x20000011, 0xe0000017 },     /* T10N */
+    { 0x03b08909, 0x07d0c909, 0x9a794410, 0xa0000001,
+      0x60000013, 0x2000000e, 0xa000000e },     /* T20L */
+    { 0x04708909, 0x07d0c909, 0x9a794410, 0xa0000001,
+      0x60000013, 0x20000011, 0xa0000011 },     /* T20N */
+    { 0x04704849, 0x04a04849, 0x9a773310, 0xa0000001,
+      0x60000023, 0x20000007, 0x50000010 },     /* T21N */
+    { 0x1290d109, 0x06405109, 0x9a7b5510, 0xa0000001,
+      0x6000002f, 0x20000018, 0x50000017 },     /* T23N */
+    { 0x07c05049, 0x07c08829, 0x9a773310, 0xa0000001,
+      0x60000013, 0x2000000e, 0x5000000e },     /* T30L */
+    { 0x04a04849, 0x07c08829, 0x9a773310, 0xa0000001,
+      0x60000013, 0x20000012, 0x50000011 },     /* T30N, T30X */
+    { 0x09508829, 0x09508829, 0x9a7b5510, 0xa0000001,
+      0x60000017, 0x20000018, 0x50000017 },     /* T30A */
+    { 0x05405109, 0x07d05909, 0x9a773310, 0xa0000001,
+      0x60000013, 0x20000014, 0x50000013 },     /* T31L */
+    { 0x07505109, 0x07d05909, 0x9a773310, 0xa0000001,
+      0x60000013, 0x2000001c, 0x50000013 },     /* T31N */
+    { 0x07405109, 0x06405109, 0x9a7b5510, 0xa0000001,
+      0x60000017, 0x2000001c, 0x50000017 },     /* T31X, T31ZX, T31AL */
+};
+
+static const T31UbootClocks *ingenic_t31_uboot_clocks(const T31Variant *v)
+{
+    /* The PLL lock bit (2) reads 1 on silicon, 0 in the variant table */
+    for (int i = 0; i < ARRAY_SIZE(t31_uboot_clocks); i++) {
+        if ((v->apll & ~4u) == t31_uboot_clocks[i].apll &&
+            (v->mpll & ~4u) == t31_uboot_clocks[i].mpll) {
+            return &t31_uboot_clocks[i];
+        }
+    }
+    return NULL;
+}
+
+/*
  * The CPM registers that read differently per family, as a T10L, T20X, T21N,
  * T23N, T30X, T31X and T32LQ read them out of reset: the I2S dividers (up to
  * the T30 at 0x60; the duty registers follow them), the T21's and T30's
@@ -390,7 +440,8 @@ static void ingenic_t31_clock_gates(const T31Variant *v, uint32_t *gr)
  * vendor U-Boot, which sets only its source (its bootrom's USB boot tries
  * the SD card with it).
  */
-static void ingenic_t31_cpm_resets(DeviceState *cpm, const T31Variant *v)
+static void ingenic_t31_cpm_resets(DeviceState *cpm, const T31Variant *v,
+                                   const uint32_t *extra, int nextra)
 {
     static const uint32_t t10[] = { 0x40, 0x02000096, 0x3c, 0x409919b8,
                                     0x44, 0x00ff0080, 0xd0, 0x00000001,
@@ -465,6 +516,9 @@ static void ingenic_t31_cpm_resets(DeviceState *cpm, const T31Variant *v)
     for (int i = 0; i < n; i++) {
         qlist_append_int(l, r[i]);
     }
+    for (int i = 0; i < nextra; i++) {
+        qlist_append_int(l, extra[i]);
+    }
     qdev_prop_set_array(cpm, "resets", l);
 }
 
@@ -532,6 +586,8 @@ Clock *ingenic_t31_cpu_clock(IngenicT31State *s)
     const T31Variant *v = ingenic_t31_find_variant(s->soc_variant);
     DeviceState *cpm = DEVICE(&s->cpm);
     uint32_t gr[2];
+    uint32_t uboot_regs[6];
+    int nuboot = 0;
 
     ingenic_t31_clock_gates(v, gr);
     qdev_prop_set_uint32(cpm, "clkgr0", gr[0]);
@@ -629,7 +685,28 @@ Clock *ingenic_t31_cpu_clock(IngenicT31State *s)
     if (extract32(v->cpuid, 12, 16) == 0x0023) {
         qdev_prop_set_uint8(cpm, "ivdc-gate", 3);
     }
-    ingenic_t31_cpm_resets(cpm, v);
+    /*
+     * A -kernel boot gets the dividers as U-Boot leaves them, which the
+     * kernel's clock tree reads: the AHB and APB buses at 200 MHz on a
+     * T31X, not the CPU's. Firmware boots set their own.
+     */
+    {
+        MachineState *ms = MACHINE(qdev_get_machine());
+        const T31UbootClocks *u = ms->kernel_filename && !ms->firmware ?
+                                  ingenic_t31_uboot_clocks(v) : NULL;
+
+        if (u) {
+            uboot_regs[nuboot++] = 0x54;
+            uboot_regs[nuboot++] = u->maccdr;
+            uboot_regs[nuboot++] = 0x68;
+            uboot_regs[nuboot++] = u->msc0cdr;
+            uboot_regs[nuboot++] = 0x74;
+            uboot_regs[nuboot++] = u->ssicdr;
+            qdev_prop_set_uint32(cpm, "cpccr", u->cpccr);
+            qdev_prop_set_uint32(cpm, "ddrcdr", u->ddrcdr);
+        }
+    }
+    ingenic_t31_cpm_resets(cpm, v, uboot_regs, nuboot);
     ingenic_t31_cpm_wmasks(cpm, v);
     /* A T32LQ keeps every bit of a write to 0x74, bit 27 too */
     if (extract32(v->cpuid, 12, 16) == 0x0032 ||
