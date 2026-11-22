@@ -1465,8 +1465,8 @@ fields, so the bits are the SDK driver's. The TMI8152 follows the
 TMI8150B datasheet (V0.3) where it has text (CS active low, the IR-cut
 table, 64 to 512 micro steps), a reverse engineered driver's behaviour
 (github.com/sstepansky/tmi8152-spi-dev: ID 0x8150, a signed 13-bit counter,
-low-power bit) and the SDK driver for the rest. The SDK samples put `ms419xx` on SSI0 and the
-other two on SSI1 (T41 only):
+low-power bit) and the SDK driver for the rest. The SDK samples put `ms419xx` on SSI0 and,
+on the T41, the other two on SSI1; the T32's samples put all three on SSI0:
 
 ```bash
 -device ms419xx,bus=ssi0,cs=0,vd-pin=63,reset-pin=17,id=ms,range=61888
@@ -1475,13 +1475,15 @@ qom-get /machine/peripheral/ms position-ab
 qom-get /machine/peripheral/tmi position-1
 ```
 
-The thingino 4.4 kernels' device trees already own SSI chip select 0 with
-spidev; the SDK drivers, whose client driver is also named `spidev`, have
-to be renamed (and bound by hand) there.
+The SDK drivers add their own device on chip select 0, so the guest's
+device tree must leave it free: a `spidev` child there takes the chip
+select first (thingino's `qemu_t32nq` and `qemu_t41nq` images leave it
+free).
 
 **I2C driver.** `ms32006` (`sample_motor_i2c`, T23 and T32) is a two-channel
-stepper driver at 0x10 on the sample's `/dev/i2c-1`:
-`-device ms32006,bus=i2c1,id=mot` (wired as the T23 PIKE board's: SDATA and SCLK on the SoC's I2C, a 24 MHz clock on PB27's PWM2). Its `position-a` and `position-b` follow the steps
+stepper driver at 0x10 on the sample's bus, `/dev/i2c-1` on the T23 and
+`/dev/i2c-2` on the T32: `-device ms32006,bus=i2c1,id=mot` (`bus=i2c2` on
+the T32) (wired as the T23 PIKE board's: SDATA and SCLK on the SoC's I2C, a 24 MHz clock on PB27's PWM2). Its `position-a` and `position-b` follow the steps
 started through registers 0x01 to 0x09.
 
 The MS32006's registers and the TMI8152's map are taken from the drivers
