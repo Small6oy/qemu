@@ -1048,8 +1048,13 @@ static void ingenic_t40_realize(DeviceState *dev, Error **errp)
                                                        "wdt-reset", 0));
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->tcu), 0,
                     s->memmap[INGENIC_T40_DEV_TCU]);
+    /*
+     * The T40 kernel chains the channel demux from tcu_int2 (INTC 25,
+     * IRQ_TCU2) alone, as a T31's does; the T41 kernel's DT names tcu_int0
+     * (INTC 27). Not measured on a T40.
+     */
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->tcu), 0,
-                       qdev_get_gpio_in(DEVICE(&s->intc), 27));
+                       qdev_get_gpio_in(DEVICE(&s->intc), t41 ? 27 : 25));
 
     /* DRAW_BOX, IRQ -> INTC source 42 (IRQ_DRAW_BOX, 32 + 10) */
     sysbus_realize(SYS_BUS_DEVICE(&s->drawbox), &error_fatal);

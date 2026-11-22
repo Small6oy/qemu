@@ -368,7 +368,8 @@ static void test_irq(void)
 /*
  * The INTC line a full match raises: a T31X's pends INTC 25 (IRQ_TCU2) for
  * every channel, the half match too and nothing on 26 or 27, which the
- * T10 to T30 kernels chain their demux from; the T32 and T33 use 27
+ * T10 to T30 kernels chain their demux from, and the T40's too; the T32,
+ * T33 and T41 use 27
  */
 static void test_intc_line(void)
 {
@@ -378,7 +379,8 @@ static void test_intc_line(void)
     } parts[] = {
         { "ingenic-t10", 25 }, { "ingenic-t20", 25 }, { "ingenic-t21", 25 },
         { "ingenic-t23", 25 }, { "ingenic-t30", 25 }, { "ingenic-t31", 25 },
-        { "ingenic-t32", 27 }, { "ingenic-t33", 27 },
+        { "ingenic-t32", 27 }, { "ingenic-t33", 27 }, { "ingenic-t40", 25 },
+        { "ingenic-t41", 27 },
     };
 
     for (int i = 0; i < ARRAY_SIZE(parts); i++) {
