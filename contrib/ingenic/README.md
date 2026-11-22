@@ -516,6 +516,20 @@ boots with) is followed by an idle gap as long as the work, so the guest's
 CPUs get at least half the host's time and the camera still boots. Under
 `-icount` the frames keep the sensor's period.
 
+`silicon-time=on` on `ingenic-avpu` (off by default) gives each H.264 and
+H.265 job the part's own time in guest time, from START to its interrupt,
+as measured on a T31X (a 1080p P picture: 16.2 ms in H.264, 19.2 ms in
+H.265): while the host still codes a job whose time is up, the guest's
+clock and CPUs wait for it. The encoder's jobs then take the part's time
+whatever the host, and the guest runs slower than real time on a host
+slower than the part. The guest's own CPU work is not held, so on a busy
+host its frame rate still drops. A thread of the encoder's own watches
+each job's time and holds the clock as it comes, so a main loop busy with
+an ISP frame does not delay the interrupt in guest time; under qtest and
+`-icount` the main loop's timer keeps the time. `-trace ingenic_avpu_done`
+gives each job's completion in guest time, so a test can count the frames
+in a second of guest time rather than of wall time.
+
 An H.264 P picture is by default what the model began as: each
 macroblock skipped, coded with no motion, or intra. `h264-motion=search`
 on `ingenic-avpu` and `ingenic-hera` (`off` is the default) has it search
