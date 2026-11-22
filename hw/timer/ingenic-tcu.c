@@ -92,8 +92,10 @@
 #define TCSR_B16        (1U << 16)
 #define TCSR_INITL      (1U << 8)
 #define TCSR_SD         (1U << 9)
+#define TCSR_HOLD       (1U << 23)
 #define TCSR_CLOCK      (TCSR_PCK_EN | TCSR_RTC_EN | TCSR_EXT_EN | \
                          TCSR_PRESCALE_MASK)
+#define TCU_CNT_MAX     0xffff
 
 /* Flag bits in TFR/TMR: full-match for channel N at bit N, half at N+16 */
 #define TCU_FULL_BIT(n)  (1U << (n))
@@ -311,6 +313,13 @@ static void tcu_ost_latch(IngenicTcuState *s, int64_t now)
  * and TESR or TSCR carry on from there. TER and TSR drop writes. All as a
  * T31X and a T40XP do at U-Boot.
  *
+ * A count above TDFR (a TCNT write, or TDFR written below the count) runs
+ * on to 0xffff and rolls to 0 with no match, then wraps at TDFR. A T41's
+ * TCSR bit 23 ("chn-hold") stops the wrap: the count passes TDFR, with its
+ * full match as it leaves it, runs on to 0xffff and stands there, a match
+ * each tick if TDFR is 0xffff. TCNT writes still land; with the bit
+ * cleared it rolls on to 0. Both as a T31X and a T41NQ count under Linux.
+ *
  * The flags are raised as the count is looked at, and a timer runs only for
  * a match whose interrupt is unmasked or a stop that waits on one.
  */
@@ -337,11 +346,18 @@ static bool tcu_chn_gate(const IngenicTcuChannel *c)
     return true;
 }
 
+/* Whether TCSR bit 23 holds the count: no wrap, it stands at 0xffff */
+static bool tcu_chn_hold(const IngenicTcuChannel *c)
+{
+    return c->tcu->chn_hold && (c->tcsr & TCSR_HOLD);
+}
+
 /* The bits of TCSR the count depends on */
 static uint32_t tcu_chn_clock_bits(const IngenicTcuState *s)
 {
     return TCSR_CLOCK | (s->tcsr_bit11_stops || s->tcsr_gated ?
-                         TCSR_B11 | TCSR_B14 | TCSR_B15 | TCSR_B16 : 0);
+                         TCSR_B11 | TCSR_B14 | TCSR_B15 | TCSR_B16 : 0) |
+           (s->chn_hold ? TCSR_HOLD : 0);
 }
 
 /* The clock TCSR picks, before its prescaler, 0 for none */
@@ -361,17 +377,27 @@ static uint32_t tcu_chn_src(const IngenicTcuChannel *c)
     return 0;
 }
 
-/* The prescaler's divisor: RTC_EN at /1024 is no whole number of Hz */
+/*
+ * The prescaler's divisor (RTC_EN at /1024 is no whole number of Hz): /1,
+ * /4, /16, /64, /256 and /1024 for 0 to 5 and /2 for 6 and 7, as a T31X's
+ * and T41NQ's channels count EXTAL
+ */
 static uint32_t tcu_chn_div(const IngenicTcuChannel *c)
 {
-    unsigned prescale = (c->tcsr & TCSR_PRESCALE_MASK) >> TCSR_PRESCALE_SHIFT;
+    static const uint32_t pre[8] = {1, 4, 16, 64, 256, 1024, 2, 2};
 
-    return 1U << (2 * MIN(prescale, 5));
+    return pre[(c->tcsr & TCSR_PRESCALE_MASK) >> TCSR_PRESCALE_SHIFT];
 }
 
 static uint32_t tcu_chn_period(const IngenicTcuChannel *c)
 {
     return (uint32_t)c->tdfr + 1;
+}
+
+/* The half match's count, past 0xffff (never) where TDHR is past TDFR */
+static uint32_t tcu_chn_half_at(const IngenicTcuChannel *c)
+{
+    return c->tdhr <= c->tdfr ? c->tdhr : TCU_CNT_MAX + 1;
 }
 
 static bool tcu_chn_active(const IngenicTcuState *s, unsigned n)
@@ -398,17 +424,47 @@ static int64_t tcu_chn_tick_ns(const IngenicTcuChannel *c, uint64_t k)
                                           tcu_chn_src(c));
 }
 
+/*
+ * The ticks from base_ns the count runs straight up before it wraps at
+ * TDFR: from above TDFR, to its roll past 0xffff; held, for ever
+ */
+static uint64_t tcu_chn_lead(const IngenicTcuChannel *c)
+{
+    if (tcu_chn_hold(c)) {
+        return UINT64_MAX;
+    }
+    return c->count_base > c->tdfr ? TCU_CNT_MAX + 1 - c->count_base : 0;
+}
+
 static uint32_t tcu_chn_pos(const IngenicTcuChannel *c, uint64_t k)
 {
-    return (c->count_base + k) % tcu_chn_period(c);
+    uint64_t lead = tcu_chn_lead(c);
+
+    if (k < lead) {
+        return MIN(c->count_base + k, TCU_CNT_MAX);
+    }
+    return ((lead ? 0 : c->count_base) + (k - lead)) % tcu_chn_period(c);
 }
 
 /* The first tick from @from on that the count reads @at, if it ever does */
 static uint64_t tcu_chn_find(const IngenicTcuChannel *c, uint64_t from,
                              uint32_t at)
 {
+    uint64_t lead = tcu_chn_lead(c);
     uint32_t period = tcu_chn_period(c);
 
+    if (from < lead) {
+        uint32_t cur = tcu_chn_pos(c, from);
+
+        /* the run up ends at 0xffff: rolled, or held there */
+        if (at >= cur && at <= TCU_CNT_MAX) {
+            return from + (at - cur);
+        }
+        if (tcu_chn_hold(c)) {
+            return UINT64_MAX;
+        }
+        from = lead;
+    }
     if (at >= period) {
         return UINT64_MAX;
     }
@@ -419,14 +475,28 @@ static uint64_t tcu_chn_find(const IngenicTcuChannel *c, uint64_t from,
 static uint64_t tcu_chn_last(const IngenicTcuChannel *c, uint64_t from,
                              uint64_t upto, uint32_t at)
 {
+    uint64_t lead = tcu_chn_lead(c);
     uint32_t period = tcu_chn_period(c);
-    uint64_t back;
+    uint64_t back, end, k;
 
-    if (at >= period || upto <= from) {
+    if (upto <= from) {
         return UINT64_MAX;
     }
-    back = (tcu_chn_pos(c, upto - 1) + period - at) % period;
-    return back <= upto - 1 - from ? upto - 1 - back : UINT64_MAX;
+    if (upto > lead && at < period) {
+        back = (tcu_chn_pos(c, upto - 1) + period - at) % period;
+        if (back <= upto - 1 - MAX(from, lead)) {
+            return upto - 1 - back;
+        }
+    }
+    if (from >= lead) {
+        return UINT64_MAX;
+    }
+    end = MIN(upto, lead);
+    if (tcu_chn_hold(c) && at == TCU_CNT_MAX) {
+        return tcu_chn_pos(c, end - 1) == at ? end - 1 : UINT64_MAX;
+    }
+    k = tcu_chn_find(c, from, at);
+    return k < end ? k : UINT64_MAX;
 }
 
 /*
@@ -446,7 +516,7 @@ static void tcu_chn_account(IngenicTcuState *s, unsigned n, int64_t now)
     if (c->stopping && full < upto) {
         upto = full + 1;
     }
-    half = tcu_chn_last(c, c->seen, upto, c->tdhr);
+    half = tcu_chn_last(c, c->seen, upto, tcu_chn_half_at(c));
     if (full < upto) {
         s->tfr |= s->flags & TCU_FULL_BIT(n);
         full = tcu_chn_last(c, c->seen, upto, c->tdfr);
@@ -522,7 +592,7 @@ static void tcu_chn_reschedule(IngenicTcuState *s, unsigned n)
             at = tcu_chn_find(c, c->seen, c->tdfr);
         }
         if (want & TCU_HALF_BIT(n)) {
-            at = MIN(at, tcu_chn_find(c, c->seen, c->tdhr));
+            at = MIN(at, tcu_chn_find(c, c->seen, tcu_chn_half_at(c)));
         }
     }
     if (at == UINT64_MAX) {
@@ -546,7 +616,7 @@ static void tcu_pwm_out(IngenicTcuState *s, unsigned n, IngenicPwmOut *o,
     memset(key, 0, sizeof(*key));
     o->level = c->tcsr & TCSR_PWM_EN ? c->out : initl;
     if ((c->tcsr & TCSR_PWM_EN) && tcu_chn_active(s, n) &&
-        c->tdhr < c->tdfr) {
+        !tcu_chn_hold(c) && c->tdhr < c->tdfr) {
         k = tcu_chn_ticks(c, now);
         o->period_ns = muldiv64((uint64_t)tcu_chn_period(c) * div,
                                 NANOSECONDS_PER_SECOND, src);
@@ -623,7 +693,8 @@ static uint64_t tcu_read(void *opaque, hwaddr offset, unsigned size)
         case CH_TDFR: return s->chn[n].tdfr;
         case CH_TDHR: return s->chn[n].tdhr;
         case CH_TCNT: return tcu_chn_count(s, n, now);
-        case CH_TCSR: return s->chn[n].tcsr;
+        case CH_TCSR:
+            return s->chn[n].tcsr;
         }
         return 0;
     }
@@ -1110,7 +1181,10 @@ static const VMStateDescription vmstate_tcu = {
  * default is the T21 manual's. The T10, T20, T23 and T31 have channels 0 to 3
  * only; the registers of 4 to 7 read 0 there. The channels' TDFR resets to 0
  * on the T32, T41 and A1, as each reads it at its bootrom; elsewhere it powers
- * on to whatever it held, and 0xffff stands in.
+ * on to whatever it held, and 0xffff stands in. "chn-hold": the channels'
+ * TCSR bit 23, where "tcsr-mask" stores it, holds the count at 0xffff, as a
+ * T41NQ's does. A T32LQ and A1 store the bit too, but nothing shows it holds
+ * there.
  */
 static const Property tcu_properties[] = {
     DEFINE_PROP_UINT32("flags", IngenicTcuState, flags, 0x00ff80ff),
@@ -1131,6 +1205,7 @@ static const Property tcu_properties[] = {
     DEFINE_PROP_BOOL("wdt-no-ext", IngenicTcuState, wdt_no_ext, false),
     DEFINE_PROP_BOOL("wdt-tcer-runs", IngenicTcuState, wdt_tcer_runs, false),
     DEFINE_PROP_BOOL("wdt-wdts-runs", IngenicTcuState, wdt_wdts_runs, false),
+    DEFINE_PROP_BOOL("chn-hold", IngenicTcuState, chn_hold, false),
     DEFINE_PROP_CHR("trace", IngenicTcuState, trace),
 };
 

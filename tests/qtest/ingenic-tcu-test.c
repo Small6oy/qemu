@@ -65,6 +65,9 @@
 #define CSR_SLOW        (1u << 1 | 5u << 3)
 /* EXT at /1024 with the enables a T32LQ's, T41NQ's and A1's counts on */
 #define CSR_GATED       (1u << 16 | 1u << 2 | 5u << 3)
+/* EXT (EXTAL, 24 MHz) over 1024, as the T41 has no RTC_EN; to the ns, up */
+#define CSR_EXT         (1u << 2 | 5u << 3)
+#define TICK_EXT        42667
 #define CSR_PWM_EN      (1u << 7)
 #define CSR_INITL       (1u << 8)
 #define CSR_SD          (1u << 9)
@@ -399,6 +402,151 @@ static void test_intc_line(void)
             qtest_quit(qts);
         }
     }
+}
+
+/*
+ * A channel's prescaler, as a T31X's and a T41NQ's channels count EXTAL
+ * against the kernel's clocksource: /1, /4, /16, /64, /256 and /1024 for
+ * codes 0 to 5, /2 for 6 and 7. Bit 16 is what a T41 needs to count.
+ */
+static void test_prescale(void)
+{
+    static const uint32_t counts[8] = {     /* in 1 ms */
+        24000, 6000, 1500, 375, 93, 23, 12000, 12000,
+    };
+    static const char *const machines[] = { "ingenic-t31", "ingenic-t41" };
+
+    for (int i = 0; i < ARRAY_SIZE(machines); i++) {
+        QTestState *qts = qtest_initf("-machine %s", machines[i]);
+
+        for (unsigned code = 0; code < 8; code++) {
+            qtest_writel(qts, TCU + TCU_TECR, 1);
+            qtest_writel(qts, TCU + TCU_TSCR, 1);
+            qtest_writel(qts, TCU + TCU_TCSR(0),
+                         1u << 16 | code << 3 | 1u << 2);
+            qtest_writel(qts, TCU + TCU_TDFR(0), 0xffff);
+            qtest_writel(qts, TCU + TCU_TCNT(0), 0);
+            qtest_writel(qts, TCU + TCU_TESR, 1);
+            qtest_clock_step(qts, 1000000);
+            g_assert_cmpuint(qtest_readl(qts, TCU + TCU_TCNT(0)), ==,
+                             counts[code]);
+        }
+        qtest_quit(qts);
+    }
+}
+
+/* Channel 0 on EXT/1024, TDFR 8 and TDHR 3, from @cnt, half a tick in */
+static void run_from(QTestState *qts, uint32_t csr, uint32_t cnt)
+{
+    qtest_writel(qts, TCU + TCU_TECR, 1);
+    qtest_writel(qts, TCU + TCU_TSCR, 1);
+    qtest_writel(qts, TCU + TCU_TCSR(0), csr);
+    qtest_writel(qts, TCU + TCU_TDFR(0), 8);
+    qtest_writel(qts, TCU + TCU_TDHR(0), 3);
+    qtest_writel(qts, TCU + TCU_TCNT(0), cnt);
+    qtest_writel(qts, TCU + TCU_TFCR, 0x10001);
+    qtest_writel(qts, TCU + TCU_TESR, 1);
+    qtest_clock_step(qts, TICK_EXT / 2);
+}
+
+static void tick_until(QTestState *qts, uint32_t cnt, uint32_t flags)
+{
+    qtest_clock_step(qts, TICK_EXT);
+    g_assert_cmphex(qtest_readl(qts, TCU + TCU_TCNT(0)), ==, cnt);
+    g_assert_cmphex(qtest_readl(qts, TCU + TCU_TFR) & 0x10001, ==, flags);
+}
+
+/*
+ * A count above TDFR runs on to 0xffff and rolls to 0 with no match, then
+ * wraps at TDFR, as on a T31X and a T41NQ
+ */
+static void test_above(void)
+{
+    static const char *const machines[] = { "ingenic-t31", "ingenic-t41" };
+
+    for (int i = 0; i < ARRAY_SIZE(machines); i++) {
+        QTestState *qts = qtest_initf("-machine %s", machines[i]);
+
+        run_from(qts, CSR_GATED, 0xfffd);
+        g_assert_cmphex(qtest_readl(qts, TCU + TCU_TCNT(0)), ==, 0xfffd);
+        tick_until(qts, 0xfffe, 0);
+        tick_until(qts, 0xffff, 0);
+        tick_until(qts, 0, 0);
+        for (unsigned n = 1; n <= 8; n++) {
+            tick_until(qts, n, n > 3 ? 0x10000 : 0);
+        }
+        tick_until(qts, 0, 0x10001);
+        qtest_quit(qts);
+    }
+}
+
+/*
+ * A T41NQ's TCSR bit 23: the count passes TDFR, its full match as it
+ * leaves it, and stands at 0xffff, a match each tick with TDFR 0xffff; a
+ * TCNT write lands, and with the bit cleared the count rolls on to 0 and
+ * wraps at TDFR again. A T31X's bit reads 0 and does nothing. A T32LQ's
+ * reads back, but nothing shows it holds there, so its count wraps.
+ */
+static void test_hold(void)
+{
+    const uint32_t csr = CSR_GATED;
+    QTestState *qts = qtest_init("-machine ingenic-t41");
+
+    run_from(qts, csr, 0);
+    tick_until(qts, 1, 0);
+    qtest_writel(qts, TCU + TCU_TCSR(0), csr | 1u << 23);
+    g_assert_cmphex(qtest_readl(qts, TCU + TCU_TCSR(0)) & 1u << 23, ==,
+                    1u << 23);
+    for (unsigned n = 2; n <= 8; n++) {
+        tick_until(qts, n, n > 3 ? 0x10000 : 0);
+    }
+    tick_until(qts, 9, 0x10001);
+    tick_until(qts, 10, 0x10001);
+
+    /* a TCNT write lands; at 0xffff it stands, with no match */
+    qtest_writel(qts, TCU + TCU_TCNT(0), 0xfffe);
+    qtest_writel(qts, TCU + TCU_TFCR, 0x10001);
+    g_assert_cmphex(qtest_readl(qts, TCU + TCU_TCNT(0)), ==, 0xfffe);
+    tick_until(qts, 0xffff, 0);
+    tick_until(qts, 0xffff, 0);
+    tick_until(qts, 0xffff, 0);
+
+    /* standing at TDFR 0xffff, the full match comes back each tick */
+    qtest_writel(qts, TCU + TCU_TDFR(0), 0xffff);
+    tick_until(qts, 0xffff, 1);
+    qtest_writel(qts, TCU + TCU_TFCR, 1);
+    tick_until(qts, 0xffff, 1);
+
+    /* cleared: on to 0, then wrapping at TDFR */
+    qtest_writel(qts, TCU + TCU_TDFR(0), 8);
+    qtest_writel(qts, TCU + TCU_TCSR(0), csr);
+    qtest_writel(qts, TCU + TCU_TFCR, 0x10001);
+    g_assert_cmphex(qtest_readl(qts, TCU + TCU_TCSR(0)) & 1u << 23, ==, 0);
+    tick_until(qts, 0, 0);
+    for (unsigned n = 1; n <= 8; n++) {
+        tick_until(qts, n, n > 3 ? 0x10000 : 0);
+    }
+    tick_until(qts, 0, 0x10001);
+    qtest_quit(qts);
+
+    qts = qtest_init("-machine ingenic-t31");
+    run_from(qts, CSR_EXT | 1u << 23, 0);
+    g_assert_cmphex(qtest_readl(qts, TCU + TCU_TCSR(0)) & 1u << 23, ==, 0);
+    for (unsigned n = 1; n <= 8; n++) {
+        tick_until(qts, n, n > 3 ? 0x10000 : 0);
+    }
+    tick_until(qts, 0, 0x10001);
+    qtest_quit(qts);
+
+    qts = qtest_init("-machine ingenic-t32");
+    run_from(qts, CSR_GATED | 1u << 23, 0);
+    g_assert_cmphex(qtest_readl(qts, TCU + TCU_TCSR(0)) & 1u << 23, ==,
+                    1u << 23);
+    for (unsigned n = 1; n <= 8; n++) {
+        tick_until(qts, n, n > 3 ? 0x10000 : 0);
+    }
+    tick_until(qts, 0, 0x10001);
+    qtest_quit(qts);
 }
 
 /* A channel at 24 MHz keeps count past the 768 s where ns times Hz wraps */
@@ -869,6 +1017,9 @@ int main(int argc, char **argv)
     qtest_add_func("ingenic-tcu/irq", test_irq);
     qtest_add_func("ingenic-tcu/intc-line", test_intc_line);
     qtest_add_func("ingenic-tcu/long", test_long);
+    qtest_add_func("ingenic-tcu/prescale", test_prescale);
+    qtest_add_func("ingenic-tcu/above", test_above);
+    qtest_add_func("ingenic-tcu/hold", test_hold);
     qtest_add_func("ingenic-tcu/wdt", test_wdt);
     qtest_add_func("ingenic-tcu/wdt-wrap", test_wdt_wrap);
     qtest_add_func("ingenic-tcu/wdt-stop", test_wdt_stop);
