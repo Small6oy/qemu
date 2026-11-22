@@ -899,18 +899,28 @@ static void avpu_hold(void)
     }
 }
 
+/*
+ * Whether avpu_hold_bh() paused the vCPUs: cpu_resume() resets a vCPU's
+ * pending exception, so one still running must not be resumed
+ */
+static bool avpu_paused;
+
 static void avpu_release(void)
 {
     /* a stop in the meantime has the clock and the vCPUs: cont restarts them */
     if (--avpu_holds == 0 && runstate_is_running()) {
         cpu_enable_ticks();
-        resume_all_vcpus();
+        if (avpu_paused) {
+            avpu_paused = false;
+            resume_all_vcpus();
+        }
     }
 }
 
 static void avpu_hold_bh(void *opaque)
 {
-    if (avpu_holds && runstate_is_running()) {
+    if (avpu_holds && runstate_is_running() && !avpu_paused) {
+        avpu_paused = true;
         pause_all_vcpus();
     }
 }
@@ -1434,7 +1444,9 @@ static void ingenic_avpu_reset_hold(Object *obj, ResetType type)
         IngenicAvpuJob *j = s->job[c];
 
         if (j) {
-            timer_del(j->due);
+            if (j->due) {
+                timer_del(j->due);
+            }
             if (j->held) {
                 avpu_release();
             }
@@ -1492,6 +1504,7 @@ static void avpu_vm_change(void *opaque, bool running, RunState state)
     IngenicAvpuState *s = opaque;
 
     if (!running) {
+        avpu_paused = false;            /* the stop has the vCPUs now */
         for (int c = 0; c < INGENIC_AVPU_CORES; c++) {
             if (s->job[c] && s->job[c]->coded) {
                 avpu_complete(s->job[c]);
