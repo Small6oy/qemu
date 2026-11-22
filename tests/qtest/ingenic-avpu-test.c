@@ -653,6 +653,84 @@ static void test_silicon_stop(void)
     qtest_quit(qts);
 }
 
+/*
+ * A machine whose vCPU runs (TCG), on a kernel image that loops: the guest's
+ * clock is the host's
+ */
+static QTestState *silicon_tcg(int host_delay_ms, char **path)
+{
+    uint8_t img[64 + 8] = { 0 };
+    int fd = g_file_open_tmp("ingenic-avpu-loop-XXXXXX", path, NULL);
+
+    stl_le_p(img + 64, 0x1000ffff);     /* b . */
+    stl_be_p(img, 0x27051956);
+    stl_be_p(img + 12, 8);
+    stl_be_p(img + 16, 0x80010000);
+    stl_be_p(img + 20, 0x80010000);
+    img[28] = 5;                        /* Linux */
+    img[29] = 5;                        /* MIPS */
+    img[30] = 2;                        /* kernel */
+    g_assert(fd >= 0);
+    g_assert(write(fd, img, sizeof(img)) == sizeof(img));
+    close(fd);
+    return qtest_initf("-machine %s -kernel %s -accel tcg "
+                       "-global ingenic-avpu.silicon-time=on "
+                       "-global ingenic-avpu.x-host-delay-ms=%d",
+                       el150.machine, *path, host_delay_ms);
+}
+
+static bool silicon_wait_irq(QTestState *qts)
+{
+    for (int i = 0; i < 20000 && !silicon_irq(qts); i++) {
+        g_usleep(500);
+    }
+    return silicon_irq(qts);
+}
+
+/*
+ * With the vCPUs run (TCG) the guest's clock is the host's, and a thread of
+ * the device's own watches the job's time and holds the clock for it. Each
+ * job's interrupt comes, and the clock runs again after it: the next job's
+ * time comes too
+ */
+static void test_silicon_thread(const void *data)
+{
+    g_autofree char *img = NULL;
+    QTestState *qts = silicon_tcg(GPOINTER_TO_INT(data), &img);
+
+    for (int i = 0; i < 3; i++) {
+        silicon_start(qts, &el150);
+        g_assert_true(silicon_wait_irq(qts));
+        qtest_writel(qts, el150.base + el150.irq, 1);
+        g_assert_false(silicon_irq(qts));
+    }
+    qtest_quit(qts);
+    unlink(img);
+}
+
+/*
+ * A stop while the thread holds the clock for a job the host is still
+ * coding: the stop waits for it and completes it, and after cont the clock
+ * runs, so the next job's time comes
+ */
+static void test_silicon_thread_stop(void)
+{
+    g_autofree char *img = NULL;
+    QTestState *qts = silicon_tcg(400, &img);
+
+    silicon_start(qts, &el150);
+    g_usleep(100 * 1000);
+    g_assert_false(silicon_irq(qts));
+    qtest_qmp_assert_success(qts, "{'execute': 'stop'}");
+    g_assert_true(silicon_irq(qts));
+    qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
+    qtest_writel(qts, el150.base + el150.irq, 1);
+    silicon_start(qts, &el150);
+    g_assert_true(silicon_wait_irq(qts));
+    qtest_quit(qts);
+    unlink(img);
+}
+
 /* Off, the interrupt comes with the host, whatever the guest's clock says */
 static void test_silicon_off(void)
 {
@@ -742,6 +820,12 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(60), test_silicon_time);
     qtest_add_func("ingenic/avpu/el150/silicon-time/stop", test_silicon_stop);
     qtest_add_func("ingenic/avpu/el150/silicon-time/off", test_silicon_off);
+    qtest_add_data_func("ingenic/avpu/el150/silicon-time/thread/quick-host",
+                        GINT_TO_POINTER(0), test_silicon_thread);
+    qtest_add_data_func("ingenic/avpu/el150/silicon-time/thread/slow-host",
+                        GINT_TO_POINTER(60), test_silicon_thread);
+    qtest_add_func("ingenic/avpu/el150/silicon-time/thread/stop",
+                   test_silicon_thread_stop);
     qtest_add_data_func("ingenic/avpu/zone/t40", &el150_t40, test_zone);
     qtest_add_data_func("ingenic/avpu/zone/t41", &el200, test_zone);
     qtest_add_data_func("ingenic/avpu/mirror/t40", &mirror_t40, test_mirror);
