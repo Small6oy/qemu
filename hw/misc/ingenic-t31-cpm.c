@@ -494,6 +494,8 @@ static void ingenic_t31_cpm_write(void *opaque, hwaddr offset,
             s->regs[idx] |= PLL_ON | PLL_LOCK;
         }
         ingenic_t31_cpm_update_cpu_clk(s, true);
+        /* a divider set before its PLL starts runs once the PLL does */
+        ingenic_t31_cpm_update_stops(s);
         break;
 
     case CPM_CPCSR:

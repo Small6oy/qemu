@@ -151,6 +151,21 @@ static void test_stop_alone(void)
     qtest_quit(qts);
 }
 
+/* CIMCDR set while its PLL is off, the PLL started after: the ISP's line */
+static void test_pll_after_cdr(void)
+{
+    QTestState *qts = start("");
+
+    qtest_irq_intercept_out_named(qts, "/machine/soc/cpm", "cim-clock");
+    pin_func(qts, 15, 1);
+    cim_set(qts, VPLL_DIV);
+    g_assert_false(qtest_get_irq(qts, 0));
+    qtest_writel(qts, CPVPCR, VPLL_ON);
+    g_assert_true(qtest_get_irq(qts, 0));
+    g_assert_true(acks(qts));
+    qtest_quit(qts);
+}
+
 static void test_pll_off(void)
 {
     QTestState *qts = start("");
@@ -211,6 +226,7 @@ int main(int argc, char **argv)
     qtest_add_func("ingenic-sensor-mclk/ce-left-set", test_ce_left_set);
     qtest_add_func("ingenic-sensor-mclk/stop", test_stop);
     qtest_add_func("ingenic-sensor-mclk/stop-alone", test_stop_alone);
+    qtest_add_func("ingenic-sensor-mclk/pll-after-cdr", test_pll_after_cdr);
     qtest_add_func("ingenic-sensor-mclk/pll-off", test_pll_off);
     qtest_add_func("ingenic-sensor-mclk/reset", test_reset);
     qtest_add_func("ingenic-sensor-mclk/reset-high", test_reset_high);
