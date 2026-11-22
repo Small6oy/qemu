@@ -295,7 +295,9 @@ static void test_t41_config2_core1(void)
 
     qts = qtest_initf("-machine ingenic-t41 -smp 2 -m 128 -kernel %s"
                       " -accel tcg", path);
-    for (i = 0; i < 1000 && qtest_readl(qts, PROG_DONE) != 0x600d; i++) {
+    /* core 0 stores its Config2 after releasing core 1, so may store last */
+    for (i = 0; i < 1000 && (qtest_readl(qts, PROG_DONE) != 0x600d ||
+                             !qtest_readl(qts, PROG_OUT)); i++) {
         g_usleep(10 * 1000);
     }
     g_assert_cmphex(qtest_readl(qts, PROG_DONE), ==, 0x600d);
