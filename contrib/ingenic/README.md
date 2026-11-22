@@ -1372,6 +1372,77 @@ four clocks, TF and INT as a level or a pulse (TI_TP). Not modelled: CLKOUT
 Camera board pin wiring is up to the kernel's device tree or board file
 (the IRQ for `rtc-pcf8563` is the pad `int-pin` names).
 
+## Motors
+
+The SDK's pan and tilt samples drive three kinds of hardware; each has a
+device, so the samples' drivers load, move something and stop at a limit.
+
+**Stepper coils on GPIO pads** (`sample_motor`, `sample_motor2` of every
+part). `gpio-stepper` watches four pads, the four coils of a unipolar
+motor in the order its half-step table (1000, 1100, 0100, 0110, 0010, 0011,
+0001, 1001) energises them, and moves the rotor one step each time the
+table index goes up or down (two for a full step). With two pads it is a
+quadrature pair. It samples the pads `settle-us` after the last change, as
+a driver sets its four pins one at a time.
+
+| Property | Meaning |
+|---|---|
+| `phase0` to `phase3` | the GPIO numbers (port * 32 + pad: PB22 is 54); `phase2` and `phase3` left out make two |
+| `range`, `start` | the rotor runs 0 to `range` (0: no stop) from `start`; a step into a stop is lost and counted in `stalls` |
+| `min-pin`, `max-pin` | limit switches on pads of the same controller, closed (level `limit-level`, 0) within `limit-margin` steps of an end |
+| `position` | read (and `qom-set`, to place the rotor) the position in half steps; `moved`, `stalls` and `glitches` count |
+
+A pad takes one device, so each motor has pads of its own. The position
+is traced as `gpio_stepper_move` (`-trace 'gpio_stepper_*'`). The sample
+drivers' pins:
+
+| Part | Sample | Horizontal coils, in table order | Vertical coils | Switches |
+|---|---|---|---|---|
+| T10 to T40 | `sample_motor` | PB22 PB21 PB20 PB19 | PC11 PC12 PC15 PC16 | none (the driver counts steps) |
+| T10 to T40 | `sample_motor2` | same | same | PC13 PC14 horizontal, PC18 PB28 vertical, active low |
+| T32 | `sample_motor2` | PC3 PC2 PC1 PC0 | PC7 PC6 PC5 PC4 | PC8 PC9, PC10 PC11 |
+| T41 | `sample_motor2` | PD3 PD2 PD1 PD0 | PD7 PD6 PD5 PD4 | PD8 PD9, PD10 PD11 |
+| T41 | `sample_motor` | PD12 PD11 PD10 PD9 | PD16 PD15 PD14 PD13 | none |
+
+(The T32 and T41 drivers put their table's bit 0 on the first pin where
+the others put bit 3, so their coils are given last to first.)
+
+```bash
+-device gpio-stepper,id=h,phase0=54,phase1=53,phase2=52,phase3=51,range=4300 \
+-device gpio-stepper,id=v,phase0=75,phase1=76,phase2=79,phase3=80,range=300
+```
+
+**SPI drivers.** `ms419xx` (`sample_motor3`, T21 to T41): two PWM channels,
+16-bit registers 0x20 to 0x2a, chip select active high and bits LSB first;
+each falling edge of its `vd-pin` (the driver's VDFZ: PB31, PC20 on the
+T21 and T30, PB25 on the T23) moves each channel by the micro steps in
+its drive register (0x24 AB, 0x29 CD; bit 8 counts up). Its `reset-pin`
+(PA17; PB26 on the T23) clears the registers while high; `range` is the
+stop in micro steps, 8 to a driver step. `tmi8152` (`sample_motor4`) and
+`tmi8153` (`sample_motor5`, T32 and T41) are two-channel micro-stepping
+drivers with 8-bit registers, a revolution counter and a count to run to
+(`step-us` a step). The SDK samples put the first on SSI0 and the other
+two on SSI1 (T41 only):
+
+```bash
+-device ms419xx,bus=ssi0,cs=0,vd-pin=63,reset-pin=17,id=ms,range=7736
+-device tmi8153,bus=ssi1,cs=0,id=tmi
+qom-get /machine/peripheral/ms position-ab
+qom-get /machine/peripheral/tmi position-1
+```
+
+The thingino 4.4 kernels' device trees already own SSI chip select 0 with
+spidev; the SDK drivers, whose client driver is also named `spidev`, have
+to be renamed (and bound by hand) there.
+
+**I2C driver.** `ms32006` (`sample_motor_i2c`, T23 and T32) is a two-channel
+stepper driver at 0x10 on the sample's `/dev/i2c-1`:
+`-device ms32006,bus=i2c1,id=mot`. Its `position-a` and `position-b` follow the steps
+started through registers 0x01 to 0x09.
+
+The SPI and I2C chips' register meanings are taken from the drivers that
+use them (no datasheet), as each device's source header says.
+
 ## Audio
 
 Every T-series SoC's audio controller (AIC) and internal codec are
