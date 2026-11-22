@@ -81,7 +81,10 @@
 #include "system/runstate.h"
 #include "system/cpus.h"
 #include "system/cpu-timers.h"
+#include "system/qtest.h"
+#include "exec/icount.h"
 #include "qemu/main-loop.h"
+#include "qemu/rcu.h"
 #include "qemu/timer.h"
 #include "system/address-spaces.h"
 #include "hw/misc/ingenic-avpu.h"
@@ -767,6 +770,9 @@ static void avpu_jpeg_done(IngenicAvpuState *s, IngenicAvpuJob *j)
     avpu_job_free(j);
 }
 
+static bool avpu_due_cancel(IngenicAvpuState *s, unsigned core);
+static void avpu_release(void);
+
 /* The job's results reach the guest and its interrupt rises */
 static void avpu_complete(IngenicAvpuJob *j)
 {
@@ -877,6 +883,9 @@ static void avpu_complete(IngenicAvpuJob *j)
     s->job[j->core] = NULL;
     R(AVPU_INT) |= BIT(j->core * avpu_layout(s)->irq_stride);
     avpu_update(s);
+    if (avpu_due_cancel(s, j->core)) {
+        avpu_release();                 /* done before avpu_due_bh came */
+    }
     avpu_job_free(j);
 }
 
@@ -890,23 +899,30 @@ static void avpu_complete(IngenicAvpuJob *j)
  * stop (measured, an x86 host with the coders busy: the guest saw 12 ms
  * more than the part's time).
  */
+/* One guest clock: the holds are shared by every AVPU instance */
+static QemuMutex avpu_hold_lock;   /* the due thread holds without the BQL */
+static bool avpu_hold_lock_init;
 static int avpu_holds;
 
 static void avpu_hold(void)
 {
+    qemu_mutex_lock(&avpu_hold_lock);
     if (avpu_holds++ == 0 && runstate_is_running()) {
         cpu_disable_ticks();
     }
+    qemu_mutex_unlock(&avpu_hold_lock);
 }
 
 /*
- * Whether avpu_hold_bh() paused the vCPUs: cpu_resume() resets a vCPU's
- * pending exception, so one still running must not be resumed
+ * Whether avpu_hold_bh() paused the vCPUs (the main loop's, under the BQL):
+ * cpu_resume() resets a vCPU's pending exception, so one still running must
+ * not be resumed
  */
 static bool avpu_paused;
 
 static void avpu_release(void)
 {
+    qemu_mutex_lock(&avpu_hold_lock);
     /* a stop in the meantime has the clock and the vCPUs: cont restarts them */
     if (--avpu_holds == 0 && runstate_is_running()) {
         cpu_enable_ticks();
@@ -915,28 +931,133 @@ static void avpu_release(void)
             resume_all_vcpus();
         }
     }
+    qemu_mutex_unlock(&avpu_hold_lock);
 }
 
 static void avpu_hold_bh(void *opaque)
 {
-    if (avpu_holds && runstate_is_running() && !avpu_paused) {
+    if (qatomic_read(&avpu_holds) && runstate_is_running() && !avpu_paused) {
         avpu_paused = true;
         pause_all_vcpus();
     }
 }
 
-static void avpu_due(void *opaque)
+/* The job's time is up; held, the guest's clock already waits for it */
+static void avpu_time_up(IngenicAvpuJob *j, bool held)
 {
-    IngenicAvpuJob *j = opaque;
-
     if (j->coded) {
         avpu_complete(j);
+        if (held) {
+            avpu_release();
+        }
         return;
     }
     j->late = true;
     j->held = true;
-    avpu_hold();
+    if (!held) {
+        avpu_hold();
+    }
     qemu_bh_schedule(j->s->hold_bh);
+}
+
+static void avpu_due(void *opaque)
+{
+    avpu_time_up(opaque, false);
+}
+
+/*
+ * With the guest's clock on the host's, a timer of the main loop comes as
+ * late as the main loop is busy (10 to 20 ms behind an ISP frame pass), and
+ * the guest's clock runs on meanwhile. So a thread of the device's own
+ * watches the job's time, and holds the clock as it comes: the main loop
+ * then completes the job at that time in guest time, whenever it gets to
+ * it. The thread takes no BQL, as pause_all_vcpus() waits with it for the
+ * virtual clock's timer callbacks. Under qtest and icount the clock waits
+ * for the main loop's timers, and those keep the job's time.
+ */
+static void avpu_due_fire(void *opaque)
+{
+    IngenicAvpuDue *d = opaque;
+    IngenicAvpuState *s = d->s;
+
+    qemu_mutex_lock(&s->due_lock);
+    if (d->armed) {
+        d->armed = false;
+        d->held = true;
+        avpu_hold();
+        qemu_bh_schedule(s->due_bh);
+    }
+    qemu_mutex_unlock(&s->due_lock);
+}
+
+/* The due thread's, from unrealize: avpu_due_main() returns */
+static void avpu_due_stop(void *opaque)
+{
+    IngenicAvpuState *s = opaque;
+
+    s->due_stop = true;
+}
+
+/* Runs until unrealize; the device is not unrealized at exit */
+static void *avpu_due_main(void *opaque)
+{
+    IngenicAvpuState *s = opaque;
+
+    rcu_register_thread();
+    qemu_set_current_aio_context(s->due_ctx);
+    while (!s->due_stop) {
+        aio_poll(s->due_ctx, true);
+    }
+    rcu_unregister_thread();
+    return NULL;
+}
+
+static void avpu_due_arm(IngenicAvpuState *s, unsigned core, int64_t at)
+{
+    qemu_mutex_lock(&s->due_lock);
+    s->due[core].armed = true;
+    qemu_mutex_unlock(&s->due_lock);
+    timer_mod(s->due[core].timer, at);
+}
+
+/* The core's job is done or gone: true if its time held the clock */
+static bool avpu_due_cancel(IngenicAvpuState *s, unsigned core)
+{
+    IngenicAvpuDue *d = &s->due[core];
+    bool held;
+
+    if (!s->due_ctx) {
+        return false;
+    }
+    qemu_mutex_lock(&s->due_lock);
+    held = d->held;
+    d->armed = d->held = false;
+    qemu_mutex_unlock(&s->due_lock);
+    timer_del(d->timer);
+    return held;
+}
+
+static void avpu_due_bh(void *opaque)
+{
+    IngenicAvpuState *s = opaque;
+
+    for (unsigned c = 0; c < INGENIC_AVPU_CORES; c++) {
+        IngenicAvpuDue *d = &s->due[c];
+        bool held;
+
+        qemu_mutex_lock(&s->due_lock);
+        held = d->held;
+        d->held = false;
+        qemu_mutex_unlock(&s->due_lock);
+        if (!held) {
+            continue;
+        }
+        if (s->job[c]) {
+            avpu_time_up(s->job[c], true);
+        } else {
+            avpu_release();
+        }
+    }
 }
 
 static void avpu_done(void *opaque, int ret)
@@ -951,7 +1072,7 @@ static void avpu_done(void *opaque, int ret)
     }
     j->t_done = g_get_monotonic_time();
     j->coded = true;
-    if (j->due && !j->late && runstate_is_running() &&
+    if (j->vt_due && !j->late && runstate_is_running() &&
         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) < j->vt_due) {
         return;                         /* its time is not up: avpu_due */
     }
@@ -996,8 +1117,12 @@ static void avpu_submit(IngenicAvpuState *s, IngenicAvpuJob *j)
     j->host_delay_ms = s->host_delay_ms;
     if (ns) {
         j->vt_due = j->vt_submit + ns;
-        j->due = timer_new_ns(QEMU_CLOCK_VIRTUAL, avpu_due, j);
-        timer_mod(j->due, j->vt_due);
+        if (s->due_ctx) {
+            avpu_due_arm(s, j->core, j->vt_due);
+        } else {
+            j->due = timer_new_ns(QEMU_CLOCK_VIRTUAL, avpu_due, j);
+            timer_mod(j->due, j->vt_due);
+        }
     }
     thread_pool_submit_aio(avpu_work, j, avpu_done, j);
 }
@@ -1443,6 +1568,9 @@ static void ingenic_avpu_reset_hold(Object *obj, ResetType type)
     for (int c = 0; c < INGENIC_AVPU_CORES; c++) {
         IngenicAvpuJob *j = s->job[c];
 
+        if (avpu_due_cancel(s, c)) {
+            avpu_release();
+        }
         if (j) {
             if (j->due) {
                 timer_del(j->due);
@@ -1537,8 +1665,54 @@ static void ingenic_avpu_realize(DeviceState *dev, Error **errp)
                    "encoder");
         return;
     }
+    if (!avpu_hold_lock_init) {
+        qemu_mutex_init(&avpu_hold_lock);
+        avpu_hold_lock_init = true;
+    }
     s->hold_bh = qemu_bh_new(avpu_hold_bh, s);
+    if (s->silicon_time && !qtest_enabled() && !icount_enabled()) {
+        s->due_ctx = aio_context_new(errp);
+        if (!s->due_ctx) {
+            return;
+        }
+        qemu_mutex_init(&s->due_lock);
+        for (unsigned c = 0; c < INGENIC_AVPU_CORES; c++) {
+            s->due[c] = (IngenicAvpuDue){
+                .s = s,
+                .core = c,
+                .timer = aio_timer_new(s->due_ctx, QEMU_CLOCK_VIRTUAL,
+                                       SCALE_NS, avpu_due_fire, &s->due[c]),
+            };
+        }
+        s->due_bh = qemu_bh_new(avpu_due_bh, s);
+        qemu_thread_create(&s->due_thread, "avpu-due", avpu_due_main, s,
+                           QEMU_THREAD_JOINABLE);
+    }
     qdev_add_vm_change_state_handler(dev, avpu_vm_change, NULL, dev);
+}
+
+static void ingenic_avpu_unrealize(DeviceState *dev)
+{
+    IngenicAvpuState *s = INGENIC_AVPU(dev);
+
+    if (!s->due_ctx) {
+        return;
+    }
+    for (unsigned c = 0; c < INGENIC_AVPU_CORES; c++) {
+        if (avpu_due_cancel(s, c)) {
+            avpu_release();
+        }
+    }
+    aio_bh_schedule_oneshot(s->due_ctx, avpu_due_stop, s);
+    qemu_thread_join(&s->due_thread);
+    for (unsigned c = 0; c < INGENIC_AVPU_CORES; c++) {
+        timer_free(s->due[c].timer);
+    }
+    qemu_bh_delete(s->due_bh);
+    qemu_mutex_destroy(&s->due_lock);
+    aio_context_unref(s->due_ctx);
+    s->due_ctx = NULL;
+    s->due_stop = false;
 }
 
 /* The channels: an H.264 or H.265 coder each, with its reference picture */
@@ -1779,6 +1953,7 @@ static void ingenic_avpu_class_init(ObjectClass *oc, const void *data)
     dc->desc = "Ingenic AVPU video encoder";
     device_class_set_props(dc, ingenic_avpu_properties);
     dc->realize = ingenic_avpu_realize;
+    dc->unrealize = ingenic_avpu_unrealize;
     dc->vmsd = &vmstate_ingenic_avpu;
     rc->phases.hold = ingenic_avpu_reset_hold;
     rc->phases.exit = ingenic_avpu_reset_exit;

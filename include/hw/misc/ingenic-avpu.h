@@ -10,6 +10,7 @@
 
 #include "hw/core/sysbus.h"
 #include "qom/object.h"
+#include "qemu/thread.h"
 #include "hw/misc/ingenic-isp.h"
 #include "hw/misc/ingenic-enc-capture.h"
 #include "hw/misc/ingenic-enc-tap.h"
@@ -25,6 +26,15 @@ OBJECT_DECLARE_TYPE(IngenicAvpuState, IngenicAvpuClass, INGENIC_AVPU)
 
 typedef struct IngenicAvpuJob IngenicAvpuJob;
 typedef struct IngenicAvpuLayout IngenicAvpuLayout;
+
+/* silicon-time: a core's job time, watched by the due thread */
+typedef struct IngenicAvpuDue {
+    IngenicAvpuState *s;
+    QEMUTimer *timer;           /* on the due thread's AioContext */
+    unsigned core;
+    bool armed;                 /* the job's time is to come */
+    bool held;                  /* it came, and holds the guest's clock */
+} IngenicAvpuDue;
 
 struct IngenicAvpuClass {
     SysBusDeviceClass parent_class;
@@ -48,6 +58,12 @@ struct IngenicAvpuState {
     bool silicon_time;          /* a job takes the part's time in guest time */
     uint32_t host_delay_ms;     /* tests: the host codes this slowly */
     QEMUBH *hold_bh;
+    AioContext *due_ctx;        /* the due thread's, NULL without it */
+    QemuThread due_thread;
+    bool due_stop;              /* the due thread's: unrealize stops it */
+    QemuMutex due_lock;         /* due[].armed and .held */
+    QEMUBH *due_bh;             /* the main loop takes a held job over */
+    IngenicAvpuDue due[INGENIC_AVPU_CORES];
     IngenicIspState *isp;       /* whose channel 0 comes over IVDC */
     IngenicEncCapture capture;
     IngenicEncTap tap;
