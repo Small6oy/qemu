@@ -504,6 +504,56 @@ static void test_tmi8152_driver(void)
     qtest_quit(qts);
 }
 
+/*
+ * TMI8160 V1.2, Register List p.9 and Control Interface p.7: the defaults,
+ * the ID, reserved addresses and continuous bytes
+ */
+static void test_tmi8160_regs(void)
+{
+    QTestState *qts = tmi_init("tmi8160");
+    uint8_t tx[3], rx[3];
+
+    g_assert_cmphex(tmi_read(qts, 0x00), ==, 0x81);
+    g_assert_cmphex(tmi_read(qts, 0x01), ==, 0x60);
+    g_assert_cmphex(tmi_read(qts, 0x02), ==, 0x80);
+    g_assert_cmphex(tmi_read(qts, 0x04), ==, 0x90);
+    g_assert_cmphex(tmi_read(qts, 0x10), ==, 0x00);
+    for (int b = 0x20; b <= 0x40; b += 0x20) {
+        g_assert_cmphex(tmi_read(qts, b), ==, 0x07);
+        g_assert_cmphex(tmi_read(qts, b + 1), ==, 0x30);
+        g_assert_cmphex(tmi_read(qts, b + 2), ==, 0x00);
+        g_assert_cmphex(tmi_read(qts, b + 3), ==, 0x07);
+        g_assert_cmphex(tmi_read(qts, b + 4), ==, 0x00);
+    }
+
+    /* the ID and the states are read only, reserved addresses hold nothing */
+    tmi_write(qts, 0x00, 0x55);
+    tmi_write(qts, 0x04, 0x55);
+    tmi_write(qts, 0x21, 0x55);
+    tmi_write(qts, 0x03, 0x55);
+    tmi_write(qts, 0x25, 0x55);
+    tmi_write(qts, 0x60, 0x55);
+    g_assert_cmphex(tmi_read(qts, 0x00), ==, 0x81);
+    g_assert_cmphex(tmi_read(qts, 0x04), ==, 0x90);
+    g_assert_cmphex(tmi_read(qts, 0x21), ==, 0x30);
+    g_assert_cmphex(tmi_read(qts, 0x03), ==, 0);
+    g_assert_cmphex(tmi_read(qts, 0x25), ==, 0);
+    g_assert_cmphex(tmi_read(qts, 0x60), ==, 0);
+
+    /* a continuous write of the 16-bit turn-count setting, and a read of it */
+    tx[0] = 0x2e | 0x80;
+    tx[1] = 0x34;
+    tx[2] = 0x12;
+    ssi_msg(qts, false, false, tx, rx, 3);
+    g_assert_cmphex(tmi_read(qts, 0x2e), ==, 0x34);
+    g_assert_cmphex(tmi_read(qts, 0x2f), ==, 0x12);
+    tx[0] = 0x2e;
+    tx[1] = tx[2] = 0;
+    ssi_msg(qts, false, false, tx, rx, 3);
+    g_assert_cmphex(rx[1] | rx[2] << 8, ==, 0x1234);
+    qtest_quit(qts);
+}
+
 static void test_tmi8160(const void *type)
 {
     QTestState *qts = tmi_init(type);
@@ -607,6 +657,7 @@ int main(int argc, char **argv)
     qtest_add_func("motor-chips/ms419xx", test_ms419xx);
     qtest_add_func("motor-chips/tmi8152", test_tmi8152);
     qtest_add_func("motor-chips/tmi8152-driver", test_tmi8152_driver);
+    qtest_add_func("motor-chips/tmi8160-regs", test_tmi8160_regs);
     qtest_add_data_func("motor-chips/tmi8160", "tmi8160", test_tmi8160);
     qtest_add_data_func("motor-chips/tmi8153", "tmi8153", test_tmi8160);
     qtest_add_func("motor-chips/ms32006", test_ms32006);

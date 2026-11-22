@@ -1,6 +1,16 @@
 /*
  * TMI8152 and TMI8160 (the TMI8153) micro-stepping motor drivers (SPI)
  *
+ * The TMI8160 follows its datasheet (V1.2, 2023.06): Register List (p.9:
+ * the ID 0x8160, every register's name and default, two motors at 0x20 and
+ * 0x40 with 16-bit speed, phase, turn count, phase set, turn set and PWM
+ * registers, and no other address), Control Interface (pp.7 and 8: the
+ * command byte is R/W, a reserved bit and a 6-bit address, bytes follow as
+ * single or continuous) and Functional Description (p.5: auto mode turns on
+ * and manual mode turns a preset number of turns). The sheet has no bit
+ * fields, so what the registers' bits do is the SDK's sample_motor5. The
+ * TMI8153 of the T41's BOM is this part under its older name.
+ *
  * The TMI8152 shares its pinout, its SPI and its five channels with the
  * TMI8150B, whose datasheet (V0.3, 2022.02) says: four channels drive two
  * stepper motors (X and Y) in six modes, the default being the one where a
@@ -9,10 +19,8 @@
  * IR-cut coil (p.10: with IREN high, IRINA high and IRINB low is forwards,
  * the reverse backwards, both high brake, both low coast); CS is active
  * low, 5 MHz at most (SPI Logic Description, p.7). The register map and the
- * SPI frame are in figures the text does not carry, and the TMI8160, which
- * the T41's BOM calls the TMI8153, has no datasheet in the archive: the
- * registers below are the SDK drivers' (sample_motor4 for the TMI8152,
- * sample_motor5, which names the TMI8160 manual, for the other).
+ * SPI frame are in figures the text does not carry: the TMI8152's
+ * registers are the SDK driver's (sample_motor4).
  *
  * The address byte with bit 7 set writes the next byte there, without it
  * the next byte read comes back; the bits go MSB first. Each channel has a
@@ -23,7 +31,7 @@
  * (16 bits, low then high) and the count to run to (16 bits). The global
  * register (0x02) enables the chip with bit 7. The IR-cut register (0x11,
  * 0x10 on the TMI8160) has IREN in bit 7, IRINA in bit 2 and IRINB in bit 3,
- * as the driver's 0x86 and 0x8a write them against the table above; its
+ * as the drivers' 0x86 and 0x8a write them against the table above; its
  * state is the "ircut" property.
  *
  *            TMI8152                       TMI8160
@@ -50,7 +58,7 @@
  * with 0xc1 (bit 6: the low-power mode of the TMI8150B's GLPEN). The SDK's
  * sample_motor4, which writes the count as it is for either direction,
  * does not agree about counter-clockwise; the datasheet and that driver
- * come first. The TMI8160's ID is taken to sit where the TMI8152's does.
+ * come first.
  * The clock dividers and the step-us time per step are not derived from
  * the drivers. Writing the counter restarts the count. The "position-1"
  * and "position-2" properties are the rotors' net steps, clockwise
@@ -88,6 +96,7 @@ typedef struct Tmi815xLayout {
     uint8_t cw, ccw;
     uint16_t id, cnt_mask;
     uint8_t mode_cont;
+    bool strict;            /* a datasheet register list: nothing else exists */
 } Tmi815xLayout;
 
 static const Tmi815xLayout lay8152 = {
@@ -98,7 +107,7 @@ static const Tmi815xLayout lay8152 = {
 static const Tmi815xLayout lay8153 = {
     .ctl = 0x20, .mode = 0x22, .cnt = 0x2a, .set = 0x2e, .stride = 0x20,
     .ircut = 0x10, .cw = 0x1, .ccw = 0x2,
-    .id = 0x8160, .cnt_mask = 0xffff,
+    .id = 0x8160, .cnt_mask = 0xffff, .strict = true,
 };
 
 struct Tmi815xClass {
@@ -193,6 +202,56 @@ static void tmi_sync(Tmi815xState *s)
     }
 }
 
+/*
+ * The TMI8160's Register List (V1.2 p.9): the ID and the two states, which
+ * are read only, the global registers, IRCUT CTRL, and for each motor (0x20
+ * and 0x40) control, state, mode, clock, speed control, then the 16-bit
+ * speed count, phase count, turn count, phase set, turn set and the two PWM
+ * widths. Every other address is reserved: it reads 0 and drops a write.
+ */
+static bool tmi_valid(const Tmi815xLayout *l, unsigned addr)
+{
+    unsigned o = addr & 0x1f;
+
+    if (!l->strict) {
+        return true;
+    }
+    if (addr < 0x20) {
+        return addr == 0x00 || addr == 0x01 || addr == 0x02 ||
+               addr == 0x04 || addr == 0x10;
+    }
+    if ((addr & 0xe0) != 0x20 && (addr & 0xe0) != 0x40) {
+        return false;
+    }
+    return o <= 0x04 || (o >= 0x06 && o <= 0x13);
+}
+
+static bool tmi_writable(const Tmi815xLayout *l, unsigned addr)
+{
+    if (l->strict && (addr == 0x00 || addr == 0x01 || addr == 0x04 ||
+                      addr == 0x21 || addr == 0x41)) {
+        return false;
+    }
+    return tmi_valid(l, addr);
+}
+
+static void tmi_defaults(Tmi815xState *s)
+{
+    const Tmi815xLayout *l = TMI815X_GET_CLASS(s)->lay;
+
+    memset(s->reg, 0, sizeof(s->reg));
+    if (!l->strict) {
+        return;
+    }
+    s->reg[0x02] = 0x80;
+    s->reg[0x04] = 0x90;
+    for (unsigned b = 0x20; b <= 0x40; b += 0x20) {
+        s->reg[b] = 0x07;
+        s->reg[b + 1] = 0x30;
+        s->reg[b + 3] = 0x07;
+    }
+}
+
 static const char *tmi_ircut_state(uint8_t v)
 {
     bool a = v & 4, b = v & 8;
@@ -207,6 +266,9 @@ static void tmi_write(Tmi815xState *s, unsigned addr, uint8_t v)
 {
     const Tmi815xLayout *l = TMI815X_GET_CLASS(s)->lay;
 
+    if (!tmi_writable(l, addr)) {
+        return;
+    }
     s->reg[addr] = v;
     trace_tmi815x_write(addr, v);
     if (addr == l->ircut) {
@@ -233,6 +295,9 @@ static uint8_t tmi_read(Tmi815xState *s, unsigned addr)
 {
     const Tmi815xLayout *l = TMI815X_GET_CLASS(s)->lay;
 
+    if (!tmi_valid(l, addr)) {
+        return 0;
+    }
     if (addr < 2) {
         return l->id >> (8 * (1 - addr));
     }
@@ -263,13 +328,18 @@ static uint32_t tmi_transfer(SSIPeripheral *dev, uint32_t val)
         s->cmd = val;
         return 0;
     }
+    /*
+     * The TMI8160 takes continuous bytes (Control Interface, p.7): the
+     * address steps on with each; the TMI8152's text says nothing of it
+     */
     if (s->cmd & 0x80) {
-        if (n == 1) {
-            tmi_write(s, s->cmd & 0x7f, val);
+        if (n == 1 || TMI815X_GET_CLASS(s)->lay->strict) {
+            tmi_write(s, (s->cmd + n - 1) & 0x7f, val);
         }
         return 0;
     }
-    return n == 1 ? tmi_read(s, s->cmd) : 0;
+    return n == 1 || TMI815X_GET_CLASS(s)->lay->strict ?
+           tmi_read(s, (s->cmd + n - 1) & 0x7f) : 0;
 }
 
 static void tmi_get_pos(Object *obj, Visitor *v, const char *name,
@@ -311,7 +381,7 @@ static void tmi_reset_hold(Object *obj, ResetType type)
 {
     Tmi815xState *s = TMI815X(obj);
 
-    memset(s->reg, 0, sizeof(s->reg));
+    tmi_defaults(s);
     s->nbytes = 0;
     for (int c = 0; c < 2; c++) {
         timer_del(s->ch[c].timer);
