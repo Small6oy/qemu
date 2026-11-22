@@ -135,6 +135,22 @@ static void test_stop(void)
     qtest_quit(qts);
 }
 
+/* STOP written alone, CE clear, as a clock driver gates the divider */
+static void test_stop_alone(void)
+{
+    QTestState *qts = start("");
+
+    qtest_writel(qts, CPVPCR, VPLL_ON);
+    pin_func(qts, 15, 1);
+    cim_set(qts, VPLL_DIV);
+    g_assert_true(acks(qts));
+    qtest_writel(qts, CIMCDR, VPLL_DIV | STOP);
+    g_assert_false(acks(qts));
+    qtest_writel(qts, CIMCDR, VPLL_DIV);
+    g_assert_true(acks(qts));
+    qtest_quit(qts);
+}
+
 static void test_pll_off(void)
 {
     QTestState *qts = start("");
@@ -194,6 +210,7 @@ int main(int argc, char **argv)
     qtest_add_func("ingenic-sensor-mclk/function0", test_function0);
     qtest_add_func("ingenic-sensor-mclk/ce-left-set", test_ce_left_set);
     qtest_add_func("ingenic-sensor-mclk/stop", test_stop);
+    qtest_add_func("ingenic-sensor-mclk/stop-alone", test_stop_alone);
     qtest_add_func("ingenic-sensor-mclk/pll-off", test_pll_off);
     qtest_add_func("ingenic-sensor-mclk/reset", test_reset);
     qtest_add_func("ingenic-sensor-mclk/reset-high", test_reset_high);

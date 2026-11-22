@@ -145,13 +145,14 @@ static uint64_t ingenic_t31_cpm_src_hz(IngenicT31CpmState *s, uint32_t v);
  * Whether the CIM divider's clock runs: not stopped and, where the part's
  * CIMCDR is measured (cim-pll-check), CE clear (a divider left with CE set
  * does not run until CE is written back to 0, as the vendor kernels do) and
- * its source PLL on.
+ * its source PLL on. STOP is a gate, written without CE by the vendor and
+ * Linux clock drivers, so it acts at once rather than through the latch.
  */
 static bool ingenic_t31_cpm_mclk_running(IngenicT31CpmState *s)
 {
     uint32_t v = ingenic_t31_cpm_cdr(s, CPM_CIMCDR);
 
-    if (v & CGU_STOP) {
+    if (s->regs[REG_INDEX(CPM_CIMCDR)] & CGU_STOP) {
         return false;
     }
     if (!s->cim_pll_check) {
