@@ -63,6 +63,8 @@
 /* n of those ticks, to the ns */
 #define TICKS_NS(n)     ((n) * 1024ull * 1000000000 / 46875)
 #define CSR_SLOW        (1u << 1 | 5u << 3)
+/* EXT at /1024 with the enables a T32LQ's, T41NQ's and A1's counts on */
+#define CSR_GATED       (1u << 16 | 1u << 2 | 5u << 3)
 #define CSR_PWM_EN      (1u << 7)
 #define CSR_INITL       (1u << 8)
 #define CSR_SD          (1u << 9)
@@ -376,11 +378,13 @@ static void test_intc_line(void)
     static const struct {
         const char *machine;
         unsigned line;
+        uint32_t csr;
     } parts[] = {
-        { "ingenic-t10", 25 }, { "ingenic-t20", 25 }, { "ingenic-t21", 25 },
-        { "ingenic-t23", 25 }, { "ingenic-t30", 25 }, { "ingenic-t31", 25 },
-        { "ingenic-t32", 27 }, { "ingenic-t33", 27 }, { "ingenic-t40", 25 },
-        { "ingenic-t41", 27 },
+        { "ingenic-t10", 25, CSR_SLOW }, { "ingenic-t20", 25, CSR_SLOW },
+        { "ingenic-t21", 25, CSR_SLOW }, { "ingenic-t23", 25, CSR_SLOW },
+        { "ingenic-t30", 25, CSR_SLOW }, { "ingenic-t31", 25, CSR_SLOW },
+        { "ingenic-t32", 27, CSR_GATED }, { "ingenic-t33", 27, CSR_SLOW },
+        { "ingenic-t40", 25, CSR_SLOW }, { "ingenic-t41", 27, CSR_GATED },
     };
 
     for (int i = 0; i < ARRAY_SIZE(parts); i++) {
@@ -388,7 +392,7 @@ static void test_intc_line(void)
             QTestState *qts = qtest_initf("-machine %s", parts[i].machine);
 
             qtest_writel(qts, TCU + TCU_TMCR, 1u << (half ? 16 : 0));
-            run(qts, CSR_SLOW);
+            run(qts, parts[i].csr);
             qtest_clock_step(qts, 12 * TICK);
             g_assert_cmphex(qtest_readl(qts, 0x10001000), ==,
                             1u << parts[i].line);
@@ -410,6 +414,118 @@ static void test_long(void)
     g_assert_cmpuint(qtest_readl(qts, TCU + TCU_TCNT(0)), ==,
                      24000000000ull % 0x10000);
     qtest_quit(qts);
+}
+
+/*
+ * A write to a stopped channel (its TSR bit set) is lost, and the same one
+ * after TSCR lands: all four registers on a T31X and T40XP, TCNT alone on a
+ * T32LQ, T41NQ and A1. The T21 to T30 and T40N parts are unmeasured and
+ * keep every write.
+ */
+static void test_stop_drops(void)
+{
+    static const struct {
+        const char *args;
+        unsigned dropped;       /* bit 0 TDFR, 1 TDHR, 2 TCNT, 3 TCSR */
+    } parts[] = {
+        { "-machine ingenic-t31", 0xf },
+        { "-machine ingenic-t40 -global ingenic-t40.soc-variant=t40xp", 0xf },
+        { "-machine ingenic-t32", 0x4 },
+        { "-machine ingenic-t41", 0x4 },
+        { "-machine ingenic-a1", 0x4 },
+        { "-machine ingenic-t21", 0 },
+        { "-machine ingenic-t40", 0 },
+    };
+
+    for (int i = 0; i < ARRAY_SIZE(parts); i++) {
+        QTestState *qts = qtest_init(parts[i].args);
+        static const uint32_t val[] = { 0x1234, 0x2345, 0x77, 0x4 };
+
+        qtest_writel(qts, TCU + TCU_TSSR, 1 << 3);
+        for (unsigned r = 0; r < 4; r++) {
+            uint32_t was = qtest_readl(qts, TCU + TCU_TDFR(3) + 4 * r);
+            uint32_t want = (parts[i].dropped >> r & 1) ? was : val[r];
+
+            qtest_writel(qts, TCU + TCU_TDFR(3) + 4 * r, val[r]);
+            g_assert_cmphex(qtest_readl(qts, TCU + TCU_TDFR(3) + 4 * r), ==,
+                            want);
+        }
+        qtest_writel(qts, TCU + TCU_TSCR, 1 << 3);
+        for (unsigned r = 0; r < 4; r++) {
+            qtest_writel(qts, TCU + TCU_TDFR(3) + 4 * r, val[r]);
+            g_assert_cmphex(qtest_readl(qts, TCU + TCU_TDFR(3) + 4 * r), ==,
+                            val[r]);
+        }
+        qtest_quit(qts);
+    }
+}
+
+/* What channel 3 counts in 1 ms with @csr, EXT at /1 being 24000 */
+static uint32_t chn_counts(QTestState *qts, uint32_t csr)
+{
+    qtest_writel(qts, TCU + TCU_TECR, 1 << 3);
+    qtest_writel(qts, TCU + TCU_TSCR, 1 << 3);
+    qtest_writel(qts, TCU + TCU_TCSR(3), csr);
+    qtest_writel(qts, TCU + TCU_TDFR(3), 0xffff);
+    qtest_writel(qts, TCU + TCU_TCNT(3), 0);
+    qtest_writel(qts, TCU + TCU_TESR, 1 << 3);
+    qtest_clock_step(qts, 1000000);
+    return qtest_readl(qts, TCU + TCU_TCNT(3));
+}
+
+/*
+ * A T32LQ's, T41NQ's and A1's TCSR holds bits 2 to 23 and counts only with
+ * bit 16 set and bit 15 clear: bit 14 with bit 11 and a prescaler, or
+ * neither of them, or bit 11 at /1. A T31X's and T40XP's holds bits 0 to 9
+ * and 11, and counts with bit 11 clear. Elsewhere EXT_EN alone counts.
+ */
+static void test_tcsr_gate(void)
+{
+    static const struct {
+        const char *args;
+        uint32_t mask;
+        bool gated;
+        bool b11stops;
+    } parts[] = {
+        { "-machine ingenic-t32", 0x00fffffc, true, false },
+        { "-machine ingenic-t41", 0x00fffffc, true, false },
+        { "-machine ingenic-a1", 0x00fffffc, true, false },
+        { "-machine ingenic-t40 -global ingenic-t40.soc-variant=t40xp",
+          0x00000bff, false, true },
+        { "-machine ingenic-t31", 0x00000bff, false, true },
+        { "-machine ingenic-t21", 0xffff, false, false },
+    };
+    const uint32_t ext = 1u << 2, pre4 = 1u << 3;
+
+    for (int i = 0; i < ARRAY_SIZE(parts); i++) {
+        QTestState *qts = qtest_init(parts[i].args);
+        bool g = parts[i].gated;
+
+        qtest_writel(qts, TCU + TCU_TSCR, 1 << 3);
+        qtest_writel(qts, TCU + TCU_TCSR(3), 0xffffffff);
+        g_assert_cmphex(qtest_readl(qts, TCU + TCU_TCSR(3)), ==,
+                        parts[i].mask);
+        qtest_writel(qts, TCU + TCU_TCSR(3), 0);
+
+        g_assert_cmpuint(chn_counts(qts, ext), ==, g ? 0 : 24000);
+        g_assert_cmpuint(chn_counts(qts, ext | 1u << 16), ==, 24000);
+        g_assert_cmpuint(chn_counts(qts, ext | 1u << 11 | 1u << 16), ==,
+                         parts[i].b11stops ? 0 : 24000);
+        if (g) {
+            g_assert_cmpuint(chn_counts(qts, ext | 1u << 11 | 1u << 15 |
+                                        1u << 16), ==, 0);
+            g_assert_cmpuint(chn_counts(qts, ext | pre4 | 1u << 11 | 1u << 16),
+                             ==, 0);
+            g_assert_cmpuint(chn_counts(qts, ext | pre4 | 1u << 14 | 1u << 16),
+                             ==, 0);
+            g_assert_cmpuint(chn_counts(qts, ext | 1u << 14 | 1u << 11 |
+                                        1u << 16), ==, 0);
+            g_assert_cmpuint(chn_counts(qts, ext | pre4 | 1u << 14 |
+                                        1u << 11 | 1u << 16), ==, 6000);
+            g_assert_cmpuint(chn_counts(qts, ext | pre4 | 1u << 16), ==, 6000);
+        }
+        qtest_quit(qts);
+    }
 }
 
 /* The watchdog, 1 ms on the 24 MHz clock: run to its match */
@@ -744,6 +860,8 @@ int main(int argc, char **argv)
                                                 cases[i].part);
         qtest_add_data_func(path, &cases[i], test_case);
     }
+    qtest_add_func("ingenic-tcu/tcsr-gate", test_tcsr_gate);
+    qtest_add_func("ingenic-tcu/stop-drops", test_stop_drops);
     qtest_add_func("ingenic-tcu/ost", test_ost);
     qtest_add_func("ingenic-tcu/ost-clocks", test_ost_clocks);
     qtest_add_func("ingenic-tcu/pwm", test_pwm);

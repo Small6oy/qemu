@@ -1612,12 +1612,24 @@ static void ingenic_t31_realize(DeviceState *dev, Error **errp)
     case 0x0005:        /* T10 */
     case 0x2000:        /* T20 */
     case 0x0023:
+        qdev_prop_set_uint32(DEVICE(&s->tcu), "flags", 0x000f800f);
+        break;
     case 0x0031:
         qdev_prop_set_uint32(DEVICE(&s->tcu), "flags", 0x000f800f);
+        /* a T31X's TCSR holds bits 0 to 9 and 11, and bit 11 stops it */
+        qdev_prop_set_uint32(DEVICE(&s->tcu), "tcsr-mask", 0x00000bff);
+        qdev_prop_set_bit(DEVICE(&s->tcu), "tcsr-bit11-stops", true);
+        /* a stopped channel drops every write */
+        qdev_prop_set_uint32(DEVICE(&s->tcu), "stop-drops", 0xf);
         break;
     case 0x0032:
         qdev_prop_set_uint32(DEVICE(&s->tcu), "flags", 0x01ff80ff);
         qdev_prop_set_uint32(DEVICE(&s->tcu), "tdfr-reset", 0);
+        /* a T32LQ's channels count only with TCSR's extra enable bits */
+        qdev_prop_set_uint32(DEVICE(&s->tcu), "tcsr-mask", 0x00fffffc);
+        qdev_prop_set_bit(DEVICE(&s->tcu), "tcsr-gated", true);
+        /* and drops a write to TCNT while its channel is stopped */
+        qdev_prop_set_uint32(DEVICE(&s->tcu), "stop-drops", 0x4);
         /*
          * A T32LQ's is reset as soon as TDR is written below its count, a
          * clear then too late

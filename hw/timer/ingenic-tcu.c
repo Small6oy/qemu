@@ -86,6 +86,10 @@
 #define TCSR_PRESCALE_SHIFT 3
 #define TCSR_PRESCALE_MASK  (7U << TCSR_PRESCALE_SHIFT)
 #define TCSR_PWM_EN     (1U << 7)
+#define TCSR_B11        (1U << 11)
+#define TCSR_B14        (1U << 14)
+#define TCSR_B15        (1U << 15)
+#define TCSR_B16        (1U << 16)
 #define TCSR_INITL      (1U << 8)
 #define TCSR_SD         (1U << 9)
 #define TCSR_CLOCK      (TCSR_PCK_EN | TCSR_RTC_EN | TCSR_EXT_EN | \
@@ -311,9 +315,41 @@ static void tcu_ost_latch(IngenicTcuState *s, int64_t now)
  * a match whose interrupt is unmasked or a stop that waits on one.
  */
 
+/*
+ * Whether TCSR lets the count run. A T40XP stops with bit 11 set. A T32LQ,
+ * T41NQ and A1 count only with bit 16 set and bit 15 clear, and bits 14 and
+ * 11 agreeing with the prescaler: bit 14 set needs bit 11 set and a
+ * prescaler; bit 11 set without bit 14 counts at /1 only. A prescaler of 0
+ * with neither set, or bit 11 clear, counts.
+ */
+static bool tcu_chn_gate(const IngenicTcuChannel *c)
+{
+    const IngenicTcuState *s = c->tcu;
+    bool pre = (c->tcsr & TCSR_PRESCALE_MASK) && (c->tcsr & TCSR_B11);
+
+    if (s->tcsr_bit11_stops && (c->tcsr & TCSR_B11)) {
+        return false;
+    }
+    if (s->tcsr_gated) {
+        return (c->tcsr & TCSR_B16) && !(c->tcsr & TCSR_B15) &&
+               !!(c->tcsr & TCSR_B14) == pre;
+    }
+    return true;
+}
+
+/* The bits of TCSR the count depends on */
+static uint32_t tcu_chn_clock_bits(const IngenicTcuState *s)
+{
+    return TCSR_CLOCK | (s->tcsr_bit11_stops || s->tcsr_gated ?
+                         TCSR_B11 | TCSR_B14 | TCSR_B15 | TCSR_B16 : 0);
+}
+
 /* The clock TCSR picks, before its prescaler, 0 for none */
 static uint32_t tcu_chn_src(const IngenicTcuChannel *c)
 {
+    if (!tcu_chn_gate(c)) {
+        return 0;
+    }
     if (c->tcsr & TCSR_EXT_EN) {
         return TCU_FREQ_EXT;
     } else if (c->tcsr & TCSR_RTC_EN) {
@@ -648,6 +684,11 @@ static void tcu_write(void *opaque, hwaddr offset, uint64_t val,
         unsigned n = (offset - TCU_CH_BASE) / TCU_CH_STRIDE;
         IngenicTcuChannel *c = &s->chn[n];
 
+        if ((s->tsr & (1U << n)) &&
+            (s->stop_drops >> (((offset - TCU_CH_BASE) % TCU_CH_STRIDE) / 4) &
+             1)) {
+            return;
+        }
         switch ((offset - TCU_CH_BASE) % TCU_CH_STRIDE) {
         case CH_TDFR:
             tcu_chn_sync(s, n, now);
@@ -663,7 +704,8 @@ static void tcu_write(void *opaque, hwaddr offset, uint64_t val,
             tcu_chn_start(s, n, now);
             break;
         case CH_TCSR:
-            if ((v ^ c->tcsr) & TCSR_CLOCK) {
+            v &= s->tcsr_mask;
+            if ((v ^ c->tcsr) & tcu_chn_clock_bits(s)) {
                 tcu_chn_sync(s, n, now);
                 c->tcsr = v;
                 tcu_chn_start(s, n, now);
@@ -993,14 +1035,34 @@ static void tcu_init(Object *obj)
     }
 }
 
+static int tcu_channel_pre_save(void *opaque)
+{
+    IngenicTcuChannel *c = opaque;
+
+    c->tcsr_lo = c->tcsr;
+    c->tcsr_hi = c->tcsr >> 16;
+    return 0;
+}
+
+static int tcu_channel_post_load(void *opaque, int version_id)
+{
+    IngenicTcuChannel *c = opaque;
+
+    c->tcsr = c->tcsr_lo | (uint32_t)c->tcsr_hi << 16;
+    return 0;
+}
+
 static const VMStateDescription vmstate_tcu_channel = {
     .name = "ingenic-tcu/channel",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
+    .pre_save = tcu_channel_pre_save,
+    .post_load = tcu_channel_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT16(tdfr, IngenicTcuChannel),
         VMSTATE_UINT16(tdhr, IngenicTcuChannel),
-        VMSTATE_UINT16(tcsr, IngenicTcuChannel),
+        VMSTATE_UINT16(tcsr_lo, IngenicTcuChannel),
+        VMSTATE_UINT16_V(tcsr_hi, IngenicTcuChannel, 3),
         VMSTATE_UINT16(count_base, IngenicTcuChannel),
         VMSTATE_INT64(base_ns, IngenicTcuChannel),
         VMSTATE_TIMER_PTR(timer, IngenicTcuChannel),
@@ -1053,6 +1115,11 @@ static const VMStateDescription vmstate_tcu = {
 static const Property tcu_properties[] = {
     DEFINE_PROP_UINT32("flags", IngenicTcuState, flags, 0x00ff80ff),
     DEFINE_PROP_UINT32("tdfr-reset", IngenicTcuState, tdfr_reset, 0xffff),
+    DEFINE_PROP_UINT32("tcsr-mask", IngenicTcuState, tcsr_mask, 0xffff),
+    DEFINE_PROP_BOOL("tcsr-bit11-stops", IngenicTcuState, tcsr_bit11_stops,
+                     false),
+    DEFINE_PROP_BOOL("tcsr-gated", IngenicTcuState, tcsr_gated, false),
+    DEFINE_PROP_UINT32("stop-drops", IngenicTcuState, stop_drops, 0),
     DEFINE_PROP_UINT32("rtc-hz", IngenicTcuState, rtc_hz, 24000000 / 512),
     DEFINE_PROP_BOOL("wdt-reset-above", IngenicTcuState, wdt_reset_above,
                      false),

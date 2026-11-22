@@ -29,7 +29,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(IngenicTcuState, INGENIC_TCU)
 typedef struct IngenicTcuChannel {
     uint16_t tdfr;          /* full-match (period) value */
     uint16_t tdhr;          /* half-match (duty) value */
-    uint16_t tcsr;          /* clock source / prescaler / control */
+    uint32_t tcsr;          /* clock source / prescaler / control */
+    uint16_t tcsr_lo;       /* tcsr as migrated: the low half and */
+    uint16_t tcsr_hi;       /* the high one, from version 3 */
     uint16_t count_base;    /* counter value sampled at base_ns */
     int64_t  base_ns;
     uint64_t seen;          /* ticks since base_ns whose matches TFR holds */
@@ -84,6 +86,10 @@ struct IngenicTcuState {
     bool wdt_tcer_runs;     /* the count runs with TCER clear */
     bool wdt_tdr_resumes;   /* a TDR write lets a WDTS-held count run on */
     bool wdt_wdts_runs;     /* WDTS holds nothing: the count runs on */
+    uint32_t tcsr_mask;     /* the channels' TCSR bits that hold a write */
+    uint32_t stop_drops;    /* registers a stopped channel drops, bits 0-3 */
+    bool tcsr_bit11_stops;  /* a TCSR with bit 11 set does not count */
+    bool tcsr_gated;        /* counts only with the extra enables set */
     unsigned channels;      /* those of its channels, from flags */
 
     CharFrontend trace;

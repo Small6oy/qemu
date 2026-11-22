@@ -904,6 +904,11 @@ static void ingenic_a1_realize(DeviceState *dev, Error **errp)
      */
     qdev_prop_set_uint32(DEVICE(&s->tcu), "flags", 0x01ff80ff);  /* an A1N's */
     qdev_prop_set_uint32(DEVICE(&s->tcu), "tdfr-reset", 0);
+    /* an A1N's channels count only with TCSR's extra enable bits */
+    qdev_prop_set_uint32(DEVICE(&s->tcu), "tcsr-mask", 0x00fffffc);
+    qdev_prop_set_bit(DEVICE(&s->tcu), "tcsr-gated", true);
+    /* and drops a write to TCNT while its channel is stopped */
+    qdev_prop_set_uint32(DEVICE(&s->tcu), "stop-drops", 0x4);
     sysbus_realize(SYS_BUS_DEVICE(&s->tcu), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->tcu), 0,
                     s->memmap[INGENIC_A1_DEV_TCU]);

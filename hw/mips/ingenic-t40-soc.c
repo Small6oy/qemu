@@ -1039,6 +1039,18 @@ static void ingenic_t40_realize(DeviceState *dev, Error **errp)
         qdev_prop_set_bit(DEVICE(&s->tcu), "wdt-reset-above", true);
         qdev_prop_set_bit(DEVICE(&s->tcu), "wdt-clear-at-tick", true);
         qdev_prop_set_bit(DEVICE(&s->tcu), "wdt-tdr-resumes", true);
+        /* a T41NQ's channels count only with TCSR's extra enable bits */
+        qdev_prop_set_uint32(DEVICE(&s->tcu), "tcsr-mask", 0x00fffffc);
+        qdev_prop_set_bit(DEVICE(&s->tcu), "tcsr-gated", true);
+        /* and drop a write to TCNT while its channel is stopped */
+        qdev_prop_set_uint32(DEVICE(&s->tcu), "stop-drops", 0x4);
+    } else if (!strcmp(ingenic_t40_find_variant(s->soc_variant)->name,
+                       "t40xp")) {
+        /* a T40XP's TCSR holds bits 0 to 9 and 11, and bit 11 stops it */
+        qdev_prop_set_uint32(DEVICE(&s->tcu), "tcsr-mask", 0x00000bff);
+        qdev_prop_set_bit(DEVICE(&s->tcu), "tcsr-bit11-stops", true);
+        /* and drops every write to a stopped channel */
+        qdev_prop_set_uint32(DEVICE(&s->tcu), "stop-drops", 0xf);
     }
     /* a T40N's and T41NQ's watchdog counts on with TCER clear */
     qdev_prop_set_bit(DEVICE(&s->tcu), "wdt-tcer-runs", true);
