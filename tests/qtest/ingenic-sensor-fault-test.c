@@ -50,6 +50,7 @@ static int expect(double e)
 static QTestState *start(const char *model, const char *extra)
 {
     QTestState *qts = qtest_initf("-machine ingenic-t20 -device image-sensor,"
+                                  "mclk-gate=off,"
                                   "id=sens,bus=i2c0,fps=25,motion=off,"
                                   "model=%s%s", model, extra);
 
@@ -405,7 +406,8 @@ static void test_migrate(void)
                              "{ 'uri': %s } }", uri);
     wait_status(src, "query-migrate", "active");
 
-    dst = qtest_initf("-machine ingenic-t20 -device image-sensor,id=sens,"
+    dst = qtest_initf("-machine ingenic-t20 -device image-sensor,"
+                      "mclk-gate=off,id=sens,"
                       "bus=i2c0,fps=25,motion=off,model=sc2336 -incoming %s",
                       uri);
     wait_status(dst, "query-status", "inmigrate");

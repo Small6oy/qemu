@@ -368,6 +368,13 @@ JPEG unmodified. Give the board its sensor with `-device image-sensor`:
 
 The sensor answers at its usual I2C address with the chip ID its vendor
 driver probes for, and sends frames while that driver has it streaming.
+On the T10 to T31 it answers only while its MCLK reaches it, as on
+silicon: PA15 on pin function 1 (the vendor kernels' `MCLK_PORTA`), and on
+the T31 a CIMCDR divider that runs (its change enable written back to 0,
+STOP clear, its source PLL on). `reset=18o` adds a reset pin that holds it
+while driven active (`o` for active low, `O` for active high);
+`mclk-gate=off` answers without the clock. The T32, T33, T40, T41 and A1
+sensors answer as before: their MCLK pads are not known to the model.
 On the T21, T23, T31, T32 and T33 it also needs its MCLK, which tx-isp
 stops while the ISP is closed, and on all of them but the T21 a MIPI
 sensor's frames need the CSI receiver out of reset, which tx-isp leaves

@@ -45,6 +45,7 @@ typedef struct Case {
 static QTestState *start(const Case *c)
 {
     QTestState *qts = qtest_initf("-machine ingenic-t20 -device image-sensor,"
+                                  "mclk-gate=off,"
                                   "bus=i2c0,fps=25,motion=off,model=%s",
                                   c->model);
 

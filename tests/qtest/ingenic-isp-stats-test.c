@@ -74,7 +74,8 @@ static QTestState *t20_start_on(const char *machine, uint32_t vic,
                                 const char *sensor)
 {
     QTestState *qts = qtest_initf("-machine %s -device "
-                                 "image-sensor,bus=i2c0,%s", machine, sensor);
+                                 "image-sensor,"
+                                 "mclk-gate=off,bus=i2c0,%s", machine, sensor);
 
     qtest_writel(qts, CPM_CLKGR0, 0);
     /* as the T20X's firmware sets them up */
@@ -625,7 +626,8 @@ static void bits_get(const uint32_t *w, unsigned at, unsigned n, uint32_t *v)
 static void t21_stats(bool enable)
 {
     QTestState *qts = qtest_init("-machine ingenic-t21 "
-                                 "-device image-sensor,model=jxq03,bus=i2c0");
+                                 "-device image-sensor,"
+                                 "mclk-gate=off,model=jxq03,bus=i2c0");
     uint32_t idx, tag, hist[512], zone[4], v, sum = 0;
 
     qtest_writel(qts, CPM_CLKGR0, 0);
@@ -704,7 +706,8 @@ static void test_t21_free(void)
 static void t21_awb_sums(const char *props, uint64_t sum[3])
 {
     QTestState *qts = qtest_initf("-machine ingenic-t21 -device "
-                                  "image-sensor,model=jxf37,bus=i2c0,%s",
+                                  "image-sensor,"
+                                  "mclk-gate=off,model=jxf37,bus=i2c0,%s",
                                   props);
     uint32_t zone[4], v;
 
@@ -792,7 +795,8 @@ static void t21_cached_run(const char *scene, const char *cache,
 {
     QTestState *qts = qtest_initf("-machine ingenic-t21 -global "
                                   "ingenic-isp.x-stats-cache=%s -device "
-                                  "image-sensor,model=jxf37,bus=i2c0,"
+                                  "image-sensor,"
+                                  "mclk-gate=off,model=jxf37,bus=i2c0,"
                                   "scene=%s", cache, scene);
 
     qtest_writel(qts, CPM_CLKGR0, 0);
@@ -893,7 +897,8 @@ static void t31_bufs(QTestState *qts, uint32_t count, uint32_t base)
 static QTestState *t31_start_on(const char *sensor)
 {
     QTestState *qts = qtest_initf("-machine ingenic-t31 -device "
-                                  "image-sensor,model=jxf28,bus=i2c0,id=cam%s",
+                                  "image-sensor,"
+                                  "mclk-gate=off,model=jxf28,bus=i2c0,id=cam%s",
                                   sensor);
 
     qtest_writel(qts, CPM_CLKGR0, 0);
@@ -1173,7 +1178,8 @@ static void tiz_awb_sums(const char *machine, const char *model,
                          const char *props, uint64_t sum[4])
 {
     QTestState *qts = qtest_initf("-machine %s -device "
-                                  "image-sensor,model=%s,bus=i2c0,id=cam,"
+                                  "image-sensor,"
+                                  "mclk-gate=off,model=%s,bus=i2c0,id=cam,"
                                   "motion=off,%s", machine, model, props);
     uint32_t w[4], idx;
 
@@ -1348,6 +1354,7 @@ static void t41_frame(QTestState *qts)
 static QTestState *t41_start_on(const char *sensor)
 {
     QTestState *qts = qtest_initf("-machine ingenic-t41 -device image-sensor,"
+                                  "mclk-gate=off,"
                                   "model=gc4023,bus=i2c0,fps=1,motion=off%s",
                                   sensor);
 
@@ -1505,7 +1512,8 @@ static void t41_awb_sums(const char *model, const char *props,
                          uint64_t sum[3])
 {
     QTestState *qts = qtest_initf("-machine %s -device "
-                                  "image-sensor,model=%s,bus=i2c0,fps=1,"
+                                  "image-sensor,"
+                                  "mclk-gate=off,model=%s,bus=i2c0,fps=1,"
                                   "motion=off,%s", t41_machine, model, props);
     uint32_t w[8], idx;
 
@@ -1602,7 +1610,8 @@ static void t32_awb_sums(const char *model, const char *props,
                          uint64_t sum[3])
 {
     QTestState *qts = qtest_initf("-machine ingenic-t32 -device "
-                                  "image-sensor,model=%s,bus=i2c0,fps=1,"
+                                  "image-sensor,"
+                                  "mclk-gate=off,model=%s,bus=i2c0,fps=1,"
                                   "motion=off,%s", model, props);
     uint32_t w[T32_ROW_WORDS], idx;
     static const uint8_t tw[15] = { [0 ... 14] = 42 };
@@ -1678,7 +1687,8 @@ static void t32_grid(const char *variant, const uint8_t *w, unsigned ncols,
 {
     QTestState *qts = qtest_initf("-machine ingenic-t32 -global "
                                   "ingenic-t31.soc-variant=%s -device "
-                                  "image-sensor,model=gc4023,bus=i2c0,fps=1,"
+                                  "image-sensor,"
+                                  "mclk-gate=off,model=gc4023,bus=i2c0,fps=1,"
                                   "motion=off,kelvin=6500,grey=128", variant);
     unsigned cap = strcmp(variant, "t32nq") ? 15 : 16;
     unsigned cols = ncols > cap ? 0 : ncols, rows = MIN(nrows, 15);
@@ -1831,7 +1841,8 @@ static void t32_bands(unsigned grey, uint32_t bands, uint32_t wall,
     static const uint8_t tw[15] = { [0 ... 14] = 85 };
     static const uint8_t th[15] = { [0 ... 14] = 48 };
     QTestState *qts = qtest_initf("-machine ingenic-t32 -device "
-                                  "image-sensor,model=gc4023,bus=i2c0,fps=1,"
+                                  "image-sensor,"
+                                  "mclk-gate=off,model=gc4023,bus=i2c0,fps=1,"
                                   "motion=off,kelvin=6500,grey=%u", grey);
     uint32_t w[T32_ROW_WORDS], idx;
 
@@ -1933,7 +1944,8 @@ static void t32_ae_frame(QTestState *qts, uint32_t *z, uint32_t *h)
 static void test_t32_ae(void)
 {
     QTestState *qts = qtest_init("-machine ingenic-t32 -device "
-                                 "image-sensor,model=gc4023,bus=i2c0,fps=1,"
+                                 "image-sensor,"
+                                 "mclk-gate=off,model=gc4023,bus=i2c0,fps=1,"
                                  "motion=off,kelvin=6500,grey=128");
     uint32_t z[1024], h[512], zones_end = 2 + 225 * 4, base = 0;
 
@@ -2185,6 +2197,7 @@ static void gc_write(QTestState *qts, uint16_t reg, uint8_t v)
 static QTestState *t31_wdr_start(bool wdr)
 {
     QTestState *qts = qtest_init("-machine ingenic-t31 -device image-sensor,"
+                                 "mclk-gate=off,"
                                  "model=gc4653,bus=i2c0,light=300,"
                                  "motion=off");
 
@@ -2324,7 +2337,8 @@ static void test_t31_wdr(void)
 static void t41_wdr(const char *model, uint8_t addr)
 {
     g_autofree char *args = g_strdup_printf(
-        "-machine ingenic-t41 -device image-sensor,model=%s,bus=i2c0,fps=1,"
+        "-machine ingenic-t41 -device image-sensor,"
+        "mclk-gate=off,model=%s,bus=i2c0,fps=1,"
         "light=300,motion=off", model);
     QTestState *qts = qtest_init(args);
     uint32_t *w = g_new(uint32_t, 0x1800 / 4), quads = T41_W * T41_H / 4;
@@ -2502,7 +2516,8 @@ static QTestState *flat_start(const FlatPart *p)
 {
     QTestState *qts = qtest_initf("-machine ingenic-t32 -global "
                                   "ingenic-t31.soc-variant=%s -device "
-                                  "image-sensor,model=%s,bus=i2c0,id=cam,"
+                                  "image-sensor,"
+                                  "mclk-gate=off,model=%s,bus=i2c0,id=cam,"
                                   "motion=off,fps=25,kelvin=%u,grey=%u",
                                   p->variant, p->model, p->kelvin, flat_grey);
 

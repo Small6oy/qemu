@@ -102,7 +102,8 @@ static QTestState *dma_init(uint32_t tdlr, uint32_t rdlr, uint32_t dmacr,
 {
     QTestState *qts = qtest_init("-machine ingenic-t31 "
                                  "-global ingenic-t31.soc-variant=t31x "
-                                 "-device image-sensor,bus=i2c0,"
+                                 "-device image-sensor,"
+                                 "mclk-gate=off,bus=i2c0,"
                                  "model=gc4653");
 
     qtest_writel(qts, DMAC, 1);

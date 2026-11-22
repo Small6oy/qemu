@@ -137,6 +137,8 @@ struct ImageSensorState {
     char *scene;                /* a YUV4MPEG2 file or FIFO, else the bars */
     char *bayer_name;           /* "rggb" to "bggr", else the model's */
     ImageSensorBayer bayer;     /* the order its raw samples come in */
+    bool mclk_gate;             /* answer only with MCLK, if the pad is known */
+    char *reset;                /* its reset pin as thingino.json gives it */
 
     int scene_fd;
     bool scene_stream;          /* a FIFO: the latest frame, else a loop */
@@ -209,6 +211,11 @@ struct ImageSensorState {
     int16_t ircut_pin[2];
     bool ircut_low[2];          /* active low */
     uint8_t irleds;
+    /* where its MCLK comes from, on a SoC whose pad is known */
+    Object *mclk_gpio;
+    Object *mclk_cpm;
+    int16_t reset_pin;          /* -1: none */
+    bool reset_low;
     int16_t irled_pin[4];       /* a GPIO, or -1 - a PWM channel */
     bool irled_low[4];
 };

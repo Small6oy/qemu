@@ -33,7 +33,8 @@ static QTestState *start(const char *model)
 {
     return qtest_initf("-machine ingenic-t31 "
                        "-global ingenic-t31.soc-variant=t31lc "
-                       "-device image-sensor,bus=i2c0,model=%s", model);
+                       "-device image-sensor,"
+                       "mclk-gate=off,bus=i2c0,model=%s", model);
 }
 
 static void select_target(QTestState *qts, unsigned addr)

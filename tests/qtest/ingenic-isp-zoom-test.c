@@ -81,7 +81,8 @@ static uint64_t frame_ns = 40000000;    /* fps=25 */
 static QTestState *start_on(const char *model, unsigned fps)
 {
     QTestState *qts = qtest_initf("-machine %s -device "
-                                  "image-sensor,model=%s,bus=i2c0,fps=%u,"
+                                  "image-sensor,"
+                                  "mclk-gate=off,model=%s,bus=i2c0,fps=%u,"
                                   "motion=off", part->machine, model, fps);
 
     frame_ns = 1000000000ull / fps;
@@ -669,7 +670,8 @@ static QTestState *t40_start_as(const char *variant, const char *model,
                                 unsigned fps, uint32_t w, uint32_t h)
 {
     QTestState *qts = qtest_initf("-machine ingenic-t40 -device "
-                                  "image-sensor,model=%s,bus=i2c0,fps=%u,"
+                                  "image-sensor,"
+                                  "mclk-gate=off,model=%s,bus=i2c0,fps=%u,"
                                   "motion=off -global "
                                   "ingenic-t40.soc-variant=%s", model, fps,
                                   variant);
@@ -801,7 +803,8 @@ static const Wide t32w = {
 
 static QTestState *wide_start(const Wide *w, uint32_t width, uint32_t height)
 {
-    QTestState *qts = qtest_initf("-machine %s -device image-sensor,model=%s,"
+    QTestState *qts = qtest_initf("-machine %s -device image-sensor,"
+                                  "mclk-gate=off,model=%s,"
                                   "bus=i2c0,fps=30,motion=off %s", w->machine,
                                   w->model, w->extra ?: "");
 
@@ -1090,7 +1093,8 @@ static void test_t40nn_scaler(void)
 static QTestState *apical_start(const char *machine, const char *model,
                                 uint32_t width)
 {
-    QTestState *qts = qtest_initf("-machine %s -device image-sensor,model=%s,"
+    QTestState *qts = qtest_initf("-machine %s -device image-sensor,"
+                                  "mclk-gate=off,model=%s,"
                                   "bus=i2c0,fps=25,motion=off", machine,
                                   model);
 

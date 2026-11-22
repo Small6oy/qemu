@@ -1527,10 +1527,54 @@ void image_sensor_release(ImageSensorState *s)
     g_array_set_size(s->held, 0);
 }
 
+/* The MCLK pad of the parts whose vendor kernels' MCLK_PORTA gives it */
+#define IMAGE_SENSOR_MCLK_PIN   15      /* PA15 */
+#define IMAGE_SENSOR_MCLK_FUNC  1
+
+static bool image_sensor_pin_drives(ImageSensorState *s, int pin, bool level);
+
+/* Whether GPIO @pin is in pin function @func, not a GPIO or an interrupt */
+static bool image_sensor_pin_func(Object *gpio, int pin, unsigned func)
+{
+    char port = 'a' + pin / 32;
+    g_autofree char *intr = g_strdup_printf("int-p%c", port);
+    g_autofree char *msk = g_strdup_printf("msk-p%c", port);
+    g_autofree char *pat1 = g_strdup_printf("pat1-p%c", port);
+    g_autofree char *pat0 = g_strdup_printf("pat0-p%c", port);
+    unsigned bit = pin % 32;
+    uint64_t i = object_property_get_uint(gpio, intr, NULL);
+    uint64_t m = object_property_get_uint(gpio, msk, NULL);
+    uint64_t p1 = object_property_get_uint(gpio, pat1, NULL);
+    uint64_t p0 = object_property_get_uint(gpio, pat0, NULL);
+
+    return !extract64(i, bit, 1) && !extract64(m, bit, 1) &&
+           (extract64(p1, bit, 1) << 1 | extract64(p0, bit, 1)) == func;
+}
+
+/*
+ * A sensor answers on I2C only while its MCLK reaches it, on the pad's pin
+ * function and from a CIM divider that runs, and its reset pin is not held
+ */
+static bool image_sensor_powered(ImageSensorState *s)
+{
+    if (s->mclk_gpio && s->mclk_cpm &&
+        (!image_sensor_pin_func(s->mclk_gpio, IMAGE_SENSOR_MCLK_PIN,
+                                IMAGE_SENSOR_MCLK_FUNC) ||
+         !object_property_get_bool(s->mclk_cpm, "mclk-running", NULL))) {
+        return false;
+    }
+    return s->reset_pin < 0 ||
+           !image_sensor_pin_drives(s, s->reset_pin, !s->reset_low);
+}
+
 static int image_sensor_event(I2CSlave *i2c, enum i2c_event event)
 {
     ImageSensorState *s = IMAGE_SENSOR(i2c);
 
+    if ((event == I2C_START_SEND || event == I2C_START_RECV) &&
+        !image_sensor_powered(s)) {
+        return -1;
+    }
     if (event == I2C_START_SEND) {
         s->addr_bytes = 0;
     }
@@ -3378,10 +3422,47 @@ static bool image_sensor_wire(ImageSensorState *s, Error **errp)
 {
     int n;
 
+    s->reset_pin = -1;
+    s->gpio = object_resolve_path_type("", "ingenic-gpio", NULL);
+    if (s->gpio) {
+        /* the T10 to T31 CIMs' MCLK is PA15 on function 1; others: not known */
+        g_autofree char *fam = object_property_get_str(s->gpio, "family",
+                                                       NULL);
+        static const char *const known[] = {
+            "t10", "t20", "t21", "t23", "t30", "t31"
+        };
+
+        if (!fam || !*fam) {
+            g_free(fam);
+            fam = g_strdup("t31");
+        }
+        s->mclk_cpm = object_resolve_path_type("", "ingenic-t31-cpm", NULL);
+        for (int i = 0; s->mclk_cpm && i < ARRAY_SIZE(known); i++) {
+            if (s->mclk_gate && !strcmp(fam, known[i])) {
+                s->mclk_gpio = s->gpio;
+            }
+        }
+    }
+    if (s->reset) {
+        int16_t pin[1];
+        bool low[1];
+
+        if (!s->gpio) {
+            error_setg(errp, "image-sensor: reset needs the SoC's GPIO");
+            return false;
+        }
+        n = image_sensor_pins("reset", s->reset, false, pin, low, 1, errp);
+        if (n < 0) {
+            return false;
+        }
+        if (n == 1) {
+            s->reset_pin = pin[0];
+            s->reset_low = low[0];
+        }
+    }
     if (!s->ircut && !s->irled) {
         return true;
     }
-    s->gpio = object_resolve_path_type("", "ingenic-gpio", NULL);
     s->pwm = object_resolve_path_type("", "ingenic-pwm", NULL);
     if (!s->pwm) {
         s->pwm = object_resolve_path_type("", "ingenic-tcu", NULL);
@@ -3765,6 +3846,8 @@ static const Property image_sensor_props[] = {
     DEFINE_PROP_STRING("irled", ImageSensorState, irled),
     DEFINE_PROP_STRING("scene", ImageSensorState, scene),
     DEFINE_PROP_STRING("bayer", ImageSensorState, bayer_name),
+    DEFINE_PROP_STRING("reset", ImageSensorState, reset),
+    DEFINE_PROP_BOOL("mclk-gate", ImageSensorState, mclk_gate, true),
 };
 
 static void image_sensor_class_init(ObjectClass *oc, const void *data)
