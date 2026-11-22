@@ -429,11 +429,12 @@ static void test_raw_kick(void)
 #define T41_INT_STA     (ISP + 0x40028)
 #define T41_VIC_HOLD    (VIC(0) + 0x1a8)
 
-static QTestState *t41_start(void)
+/* A T41 whose sensor has @opts; raw_frame()'s frames are RGGB */
+static QTestState *t41_start_sensor(const char *opts)
 {
-    QTestState *qts = qtest_init("-machine ingenic-t41 -device image-sensor,"
-                                 "model=jxq03,bus=i2c0,fps=25,stamp=on,"
-                                 "motion=off");
+    QTestState *qts = qtest_initf("-machine ingenic-t41 -device image-sensor,"
+                                  "model=jxq03,bus=i2c0,fps=25,motion=off%s",
+                                  opts);
 
     qtest_writel(qts, CPM_CLKGR0, 0);
     qtest_writel(qts, 0x10023000 + 0x0c, 1);        /* DPHY_RSTZ */
@@ -443,6 +444,11 @@ static QTestState *t41_start(void)
     qtest_writel(qts, VIC(0) + 0x004, W << 16 | H);
     qtest_writel(qts, T41_DMA_EN, 0x3f);
     return qts;
+}
+
+static QTestState *t41_start(void)
+{
+    return t41_start_sensor(",stamp=on,bayer=rggb");
 }
 
 /* The raw WDMA: a frame into each queued buffer, 16 bits a sample, then done */
@@ -609,6 +615,59 @@ static void test_raw_loop(void)
     qtest_quit(qts);
 }
 
+/*
+ * The raw loop in the sensor's own Bayer order: the JXQ03's B Gb / Gr R, or
+ * R Gr / Gb B set by "bayer", seeing a grey in a warm light. The WDMA's
+ * frame has its R phase above its B phase, and that frame given back to the
+ * RDMA comes out of the channel warm, not cool: the core reads its input in
+ * the order the guest sets for the sensor, which the model takes from it.
+ */
+static void test_raw_bayer(const void *data)
+{
+    int order = GPOINTER_TO_INT(data);
+    QTestState *qts = t41_start_sensor(order ? ",grey=128,kelvin=2500"
+                                       : ",grey=128,kelvin=2500,bayer=rggb");
+    uint32_t y = BUF + 0x10000, uv = BUF + 0x11000, ch = ISP + 0xf0100;
+    uint64_t red = 0, blue = 0;
+
+    qtest_writel(qts, ch + 0x00, W << 16 | H);
+    qtest_writel(qts, ch + 0x80, W);
+    qtest_writel(qts, ch + 0x98, W);
+    qtest_writel(qts, ch + 0x6c, y);
+    qtest_writel(qts, ch + 0x84, uv);
+    qtest_writel(qts, ISP + 0xf0008, 1);
+    qtest_writel(qts, T41_WDMA + 0x14, 0x10020);
+    qtest_writel(qts, T41_WDMA + 0x1c, W * 2);
+    qtest_writel(qts, T41_WDMA + 0x18, BUF);
+    qtest_writel(qts, T41_WDMA + 0x04, 1);
+    qtest_writel(qts, T41_RDMA + 0x08, 1);
+    qtest_writel(qts, T41_RDMA + 0x14, W * 2);
+    qtest_writel(qts, T41_RDMA + 0x24, 0x2a);
+    qtest_writel(qts, T41_RDMA + 0x04, 1);
+    qtest_writel(qts, VIC(0), 1);
+    qtest_clock_step(qts, T41_FIRST_NS + FRAME_NS / 2);
+    g_assert_cmphex(qtest_readl(qts, T41_WDMA + 0x20), ==, BUF);
+
+    /* R on (0, 0) for RGGB, (1, 1) for BGGR; B on the other */
+    for (uint32_t yy = 0; yy < H; yy += 2) {
+        for (uint32_t xx = 0; xx < W; xx += 2) {
+            red += raw_at(qts, BUF, xx + (order & 1), yy + (order >> 1));
+            blue += raw_at(qts, BUF, xx + !(order & 1), yy + !(order >> 1));
+        }
+    }
+    g_assert_cmpuint(red, >, blue * 3 / 2);
+
+    qtest_writel(qts, T41_RDMA + 0x0c, BUF);
+    g_assert_cmphex(qtest_readl(qts, ISP + 0xf017c) >> 8, ==, 1);
+    for (uint32_t i = 0; i < W * H / 2; i += 2 * 37) {
+        uint8_t cb = qtest_readb(qts, uv + i);
+        uint8_t cr = qtest_readb(qts, uv + i + 1);
+
+        g_assert_cmpuint(cr, >, cb + 16);
+    }
+    qtest_quit(qts);
+}
+
 #define STAT_AE_Z       0x00600000
 #define STAT_AE_H       0x00601000
 #define STAT_AWB        0x00602000
@@ -729,11 +788,12 @@ static void raw_frame(QTestState *qts, uint32_t addr, unsigned what);
 #define T32_DMA_STA     (ISP + 0x300b8)
 #define T32_INT_STA     (ISP + 0x30028)
 
+/* raw_frame()'s frames are RGGB, and so the sensor's */
 static QTestState *t32_start(void)
 {
     QTestState *qts = qtest_init("-machine ingenic-t32 -device image-sensor,"
                                  "model=jxq03,bus=i2c0,fps=25,stamp=on,"
-                                 "motion=off");
+                                 "motion=off,bayer=rggb");
     uint32_t v = ISP + 0x80000;
 
     qtest_writel(qts, CPM_CLKGR0, 0);
@@ -1391,6 +1451,10 @@ int main(int argc, char **argv)
     qtest_add_func("ingenic-isp-vic/t32/raw-inject", test_t32_raw_inject);
     qtest_add_func("ingenic-isp-vic/t32/raw-modules", test_t32_raw_modules);
     qtest_add_func("ingenic-isp-vic/t41/raw-loop", test_raw_loop);
+    qtest_add_data_func("ingenic-isp-vic/t41/raw-bayer-rggb",
+                        GINT_TO_POINTER(0), test_raw_bayer);
+    qtest_add_data_func("ingenic-isp-vic/t41/raw-bayer-sensor",
+                        GINT_TO_POINTER(3), test_raw_bayer);
     qtest_add_func("ingenic-isp-vic/t41/raw-stats", test_raw_stats);
     qtest_add_data_func("ingenic-isp-vic/t40/joint-side", (void *)1,
                         test_joint);

@@ -246,7 +246,7 @@ static void test_t23(void)
     rmdir_files(dir2);
 }
 
-/* The T40's raw frame, as its VIC's capture writes it */
+/* The T40's raw frame, as its VIC's capture writes it, in the JXQ03's BGGR */
 static void test_t40_raw(void)
 {
     g_autofree char *dir = tmpdir();
@@ -270,7 +270,7 @@ static void test_t40_raw(void)
     qtest_clock_step(qts, FRAME_NS * 3);
     qtest_quit(qts);
 
-    raw = slurp(dir, "raw-0-64x32-bayer_rggb16le.raw", &len);
+    raw = slurp(dir, "raw-0-64x32-bayer_bggr16le.raw", &len);
     g_assert_cmpuint(len, >=, 3 * sizeof(mem));
     g_assert_cmpuint(len % sizeof(mem), ==, 0);
     g_assert_cmpmem(raw, sizeof(mem), mem, sizeof(mem));
