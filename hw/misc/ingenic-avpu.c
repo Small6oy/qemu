@@ -780,10 +780,10 @@ static void avpu_complete(IngenicAvpuJob *j)
     uint32_t st[CL_STATUS_WORDS];
     IngenicAvpuH264 *h264;
     AvpuChan *ch;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
-    trace_ingenic_avpu_done(j->core, j->pic.width, j->pic.height,
-        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - j->vt_submit,
-        j->t_start - j->t_submit, j->t_done - j->t_start);
+    trace_ingenic_avpu_done(j->core, j->pic.width, j->pic.height, now,
+        now - j->vt_submit, j->t_start - j->t_submit, j->t_done - j->t_start);
     if (j->jpeg) {
         avpu_jpeg_done(s, j);
         return;
