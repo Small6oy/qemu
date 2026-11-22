@@ -1412,21 +1412,32 @@ the others put bit 3, so their coils are given last to first.)
 -device gpio-stepper,id=v,phase0=75,phase1=76,phase2=79,phase3=80,range=300
 ```
 
-**SPI drivers.** `ms419xx` (`sample_motor3`, T21 to T41): two PWM channels,
-16-bit registers 0x20 to 0x2a, chip select active high and bits LSB first;
-each falling edge of its `vd-pin` (the driver's VDFZ: PB31, PC20 on the
-T21 and T30, PB25 on the T23) moves each channel by the micro steps in
-its drive register (0x24 AB, 0x29 CD; bit 8 counts up). Its `reset-pin`
-(PA17; PB26 on the T23) clears the registers while high; `range` is the
-stop in micro steps, 8 to a driver step. `tmi8152` (`sample_motor4`) and
-`tmi8153` (`sample_motor5`, T32 and T41) are two-channel micro-stepping
-drivers with 8-bit registers, a revolution counter and a count to run to
-(`step-us` a step). The SDK samples put the first on SSI0 and the other
-two on SSI1 (T41 only):
+**SPI drivers.** `ms419xx` (`sample_motor3`, T21 to T41) follows RuiMeng's
+MS41929 datasheet (V1.2): 24-bit frames LSB first with chip select high,
+registers 0x0b, 0x20 to 0x2a and 0x2c with the datasheet's initial values
+and kept bits, and two micro-stepping motors. Each active edge of its
+`vd-pin` (the driver's VDFZ: PB31, PC20 on the T21 and T30, PB25 on the
+T23; the rising edge unless MODESEL_FZ is set) starts a move after the DT1
+and DT2 waits: PSUM * 8 256ths of a sine cycle (a full step is 64, what
+the vendor driver counts as one) at 3 * INTCT / `oscin` each, whatever the
+division, and what is left when the next edge comes is cancelled. The
+`position-ab` and `position-cd` properties count forward (CCWCW 0) up, and
+the vendor driver's right or up is reverse, so its coordinate is `range`
+less the model's. `reset-pin` (PA17; PB26 on the T23) gives the initial values
+back while at `reset-level` (high: the datasheet's RSTB is active low, but
+the driver pulses it high and leaves it low). `range` is the stop. `tmi8152`
+(`sample_motor4`) and `tmi8160` (`sample_motor5`, the T41's TMI8153 under its
+older name, also `tmi8153`) are two-channel micro-stepping drivers with
+8-bit registers, a revolution counter and a count to run to (`step-us` a
+step), and an IR-cut bridge (`ircut`). The TMI8152 follows the TMI8150B
+datasheet (V0.3) where it has text (CS active low, the IR-cut table, 64 to
+512 micro steps); the register map is the SDK driver's, and the TMI8160 has
+no datasheet in the archive. The SDK samples put `ms419xx` on SSI0 and the
+other two on SSI1 (T41 only):
 
 ```bash
--device ms419xx,bus=ssi0,cs=0,vd-pin=63,reset-pin=17,id=ms,range=7736
--device tmi8153,bus=ssi1,cs=0,id=tmi
+-device ms419xx,bus=ssi0,cs=0,vd-pin=63,reset-pin=17,id=ms,range=61888
+-device tmi8160,bus=ssi1,cs=0,id=tmi
 qom-get /machine/peripheral/ms position-ab
 qom-get /machine/peripheral/tmi position-1
 ```
@@ -1437,11 +1448,13 @@ to be renamed (and bound by hand) there.
 
 **I2C driver.** `ms32006` (`sample_motor_i2c`, T23 and T32) is a two-channel
 stepper driver at 0x10 on the sample's `/dev/i2c-1`:
-`-device ms32006,bus=i2c1,id=mot`. Its `position-a` and `position-b` follow the steps
+`-device ms32006,bus=i2c1,id=mot` (wired as the T23 PIKE board's: SDATA and SCLK on the SoC's I2C, a 24 MHz clock on PB27's PWM2). Its `position-a` and `position-b` follow the steps
 started through registers 0x01 to 0x09.
 
-The SPI and I2C chips' register meanings are taken from the drivers that
-use them (no datasheet), as each device's source header says.
+The MS32006, TMI8160 and the TMI8152's register map are taken from the
+drivers that use them (no datasheet is in the archive), as each device's
+source header says; no TMI8152C I2C sample is in the T32/T33 SDK, so there
+is no TMI8152C model.
 
 ## Audio
 
