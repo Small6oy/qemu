@@ -60,6 +60,8 @@ struct IngenicT20IspClass {
     double temper_u0;
     /* The CPM divider of its clock; the frames it keeps up with, per load */
     hwaddr ispcdr;
+    /* The rate in kHz it is known to take (the vendor's); 0 for none */
+    uint32_t max_khz;
     const IngenicT20IspKeep *keep;
     unsigned keeps;
 };
@@ -77,6 +79,10 @@ struct IngenicT20IspState {
     QEMUTimer *frame_timer;
     Object *cpm;                    /* the clock the core runs at */
     uint32_t keep_acc;              /* frames let out so far, in thousandths */
+    bool gated;                     /* CLKGR0's gate is shut */
+    bool clk_hang;                  /* a clock above its limit hangs the bus */
+    bool clk_logged;
+    bool bus_hung;                  /* an access that never completes */
 
     uint32_t regs[INGENIC_T20_ISP_IOSIZE / 4];
     IngenicT20IspWriter writer[INGENIC_T20_ISP_WRITERS];

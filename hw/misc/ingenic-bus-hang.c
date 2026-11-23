@@ -25,3 +25,25 @@ void ingenic_bus_hang(const char *who, hwaddr addr, bool write)
     }
     cpu_stop_current();
 }
+
+bool ingenic_clock_over(const char *who, const char *block, uint64_t hz,
+                        uint64_t max_hz, bool hang, bool *logged,
+                        hwaddr addr, bool write)
+{
+    if (!hz || hz <= max_hz) {
+        return false;
+    }
+    if (!*logged) {
+        *logged = true;
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: %s of 0x%" HWADDR_PRIx " with the %s clock at "
+                      "%" PRIu64 " kHz, above the %" PRIu64 " kHz the part "
+                      "takes%s\n", who, write ? "write" : "read", addr,
+                      block, hz / 1000, max_hz / 1000,
+                      hang ? "; hangs the bus" : "");
+    }
+    if (hang) {
+        ingenic_bus_hang(who, addr, write);
+    }
+    return hang;
+}

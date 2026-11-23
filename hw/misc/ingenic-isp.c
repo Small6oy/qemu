@@ -1635,6 +1635,14 @@ struct IngenicIspLayout {
                                     /* below @bus_split, scdr to @bus_end */
                                     /* (isp_bus_hangs()) */
     uint8_t bus_ok[2];              /* accesses a too fast one lets by */
+    /*
+     * The clocks an access is checked against (isp_clock_over()): the
+     * dividers of the core's and the MSCA's, and the rates in kHz that the
+     * part is known to take; the MSCA's from @clk_split to @clk_end. 0: none
+     */
+    hwaddr clk_cdr[2];
+    uint32_t clk_max_khz[2];
+    hwaddr clk_split, clk_end;
     hwaddr chwin;                   /* each channel's input window (the */
                                     /* AutoZoom), x << 16 | y, then */
                                     /* w << 16 | h at +4, 8 apart */
@@ -1829,6 +1837,7 @@ static const IngenicIspLayout ingenic_t31_isp_layout = {
     .chan = &ingenic_t31_isp_chan_regs,
     .fcrop = 0x9860,
     .ispcdr = 0x80,
+    .clk_cdr = { 0x80 }, .clk_max_khz = { 250000 },
     .loads = &ingenic_t31_isp_loads,
     .stall_sta = BIT(10) | BIT(9),
     .unscaled_bit = BIT(8),
@@ -1884,6 +1893,7 @@ static const IngenicIspLayout ingenic_t21_isp_layout = {
     .nmasks = ARRAY_SIZE(ingenic_t21_isp_masks),
     .raw_part = IMAGE_SENSOR_PART_T21,
     .ispcdr = 0x80,
+    .clk_cdr = { 0x80 }, .clk_max_khz = { 125000 },
     .loads = &ingenic_t21_isp_loads,
     .stall_sta = BIT(9),            /* tx-isp: "irq-status 0x200" */
     .hldc = 0x2200,
@@ -1964,6 +1974,7 @@ static const IngenicIspLayout ingenic_t23_isp_layout = {
     .chan = &ingenic_t23_isp_chan_regs,
     .fcrop = 0xd090,
     .ispcdr = 0x80,
+    .clk_cdr = { 0x80 }, .clk_max_khz = { 300000 },
     .loads = &ingenic_t23_isp_loads,
     /*
      * A T23N past its clock (both the scaler and a clock of 75 MHz at 3.3x
@@ -2055,6 +2066,8 @@ static const IngenicIspLayout ingenic_t32_isp_layout = {
     .wb_b = T32_WB_B,
     .raw_part = IMAGE_SENSOR_PART_T32,
     .ispcdr = 0x80,
+    .clk_cdr = { 0x80, 0x90 }, .clk_max_khz = { 300000, 476000 },
+    .clk_split = 0xf0000, .clk_end = 0xff000,
     .scdr = 0x90,
     .chwin = 0xf0100,
     .chwin_step = 0x100,
@@ -2077,6 +2090,8 @@ static const IngenicIspLayout ingenic_t32_isp_layout = {
 /* The T32's, with register lists the core loads itself */
 static const IngenicIspLayout ingenic_t33_isp_layout = {
     .desc = "Ingenic T33 ISP and VIC",
+    .clk_cdr = { 0x80, 0x90 }, .clk_max_khz = { 340000, 476000 },
+    .clk_split = 0xf0000, .clk_end = 0xff000,
     .pipes = 1,
     .pipe = {
         { .int_en = 0x30020, .int_sta = 0x30028, .int_clr = 0x30024,
@@ -2121,6 +2136,8 @@ static const IngenicIspLayout ingenic_t33_isp_layout = {
 /* The T33's, its register lists' block and OSD pictures moved */
 static const IngenicIspLayout ingenic_t32pro_isp_layout = {
     .desc = "Ingenic T32Pro ISP and VIC",
+    .clk_cdr = { 0x80, 0x90 }, .clk_max_khz = { 340000, 476000 },
+    .clk_split = 0xf0000, .clk_end = 0xff000,
     .pipes = 1,
     .pipe = {
         { .int_en = 0x30020, .int_sta = 0x30028, .int_clr = 0x30024,
@@ -2230,6 +2247,7 @@ static const IngenicIspLayout ingenic_t40_isp_layout = {
      * while the bank is non-zero.
      */
     .ispcdr = 0x80,
+    .clk_cdr = { 0x80 }, .clk_max_khz = { 300000 },
     .chwin = 0x160a0,
     .loads = &ingenic_t40_isp_loads,
     .loads_nn = &ingenic_t40nn_isp_loads,
@@ -2299,6 +2317,8 @@ static const IngenicIspLayout ingenic_t41_isp_layout = {
     .core_reset = 0x00024,
     .idle_req = 0x00200,
     .ispcdr = 0x80,
+    .clk_cdr = { 0x80, 0xa8 }, .clk_max_khz = { 1104000, 1104000 },
+    .clk_split = 0xf0000, .clk_end = 0xff000,
     .scdr = 0xa8,
     .bus_split = 0xf0000,
     .bus_end = 0xff000,
@@ -11450,12 +11470,45 @@ static bool isp_bus_hangs(IngenicIspState *s, hwaddr off, bool write)
     return false;
 }
 
+/*
+ * Whether an access to @off hangs the bus for a clock above what the part is
+ * known to take (the layout's clk_max_khz: the vendor's, none measured but
+ * the T41's). A T20X's hung at the first access, with the gate open and the
+ * divider passing the bare MPLL; an access logs once either way.
+ */
+static bool isp_clock_over(IngenicIspState *s, hwaddr off, bool write)
+{
+    const IngenicIspLayout *l = isp_layout(s);
+    unsigned dom = l->clk_split && off >= l->clk_split;
+    const char *block = dom ? "MSCA" : "ISP";
+
+    if (!l->clk_max_khz[dom] || !s->cpm || s->gated ||
+        (dom && off >= l->clk_end)) {
+        return false;
+    }
+    if (!dom && l->vics && off >= l->vic &&
+        off < l->vic + l->vics * l->vic_stride) {
+        block = "VIC";
+    }
+    if (ingenic_clock_over("ingenic-isp", block,
+                           ingenic_cgu_hz(s->cpm, l->clk_cdr[dom]),
+                           l->clk_max_khz[dom] * 1000ULL, s->clk_hang,
+                           &s->clk_logged[dom], off, write)) {
+        s->bus_hung = true;
+        return true;
+    }
+    return false;
+}
+
 static uint64_t ingenic_isp_read(void *opaque, hwaddr off, unsigned size)
 {
     IngenicIspState *s = INGENIC_ISP(opaque);
     char name[ISP_NAME_LEN];
     uint32_t v;
 
+    if (isp_clock_over(s, off, false)) {
+        return 0;
+    }
     if (isp_bus_hangs(s, off, false)) {
         return 0;
     }
@@ -12312,7 +12365,7 @@ static void ingenic_isp_write(void *opaque, hwaddr off, uint64_t value,
     IngenicIspState *s = INGENIC_ISP(opaque);
     char name[ISP_NAME_LEN];
 
-    if (isp_bus_hangs(s, off, true)) {
+    if (isp_clock_over(s, off, true) || isp_bus_hangs(s, off, true)) {
         return;
     }
     if (trace_event_get_state_backends(TRACE_INGENIC_ISP_WRITE)) {
@@ -12365,6 +12418,7 @@ static void ingenic_isp_reset_enter(Object *obj, ResetType type)
 
     s->bus_hung = false;
     memset(s->bus_count, 0, sizeof(s->bus_count));
+    memset(s->clk_logged, 0, sizeof(s->clk_logged));
 }
 
 static void ingenic_isp_reset_hold(Object *obj, ResetType type)
@@ -13319,6 +13373,7 @@ static const Property ingenic_isp_props[] = {
     DEFINE_PROP_LINK("cpm", IngenicIspState, cpm, TYPE_INGENIC_CGU,
                      Object *),
     DEFINE_PROP_BOOL("bus-hung", IngenicIspState, bus_hung, false),
+    DEFINE_PROP_BOOL("clock-hang", IngenicIspState, clk_hang, false),
 };
 
 static void ingenic_isp_class_init(ObjectClass *oc, const void *data)

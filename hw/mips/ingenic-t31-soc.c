@@ -2675,6 +2675,9 @@ static void ingenic_t31_realize(DeviceState *dev, Error **errp)
             sysbus_realize(isp, &error_fatal);
             sysbus_mmio_map(isp, 0, s->memmap[INGENIC_T31_DEV_ISP]);
             sysbus_connect_irq(isp, 0, qdev_get_gpio_in(DEVICE(&s->intc), 29));
+            /* CLKGR0 bit 23 gates it too */
+            qdev_connect_gpio_out_named(DEVICE(&s->cpm), "isp-clock", 0,
+                qdev_get_gpio_in_named(DEVICE(isp), "clock", 0));
         }
         /*
          * The T20's and T30's plain CSI host at 0x10040000; this ISP model

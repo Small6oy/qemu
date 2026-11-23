@@ -152,6 +152,8 @@ struct IngenicIspState {
     uint32_t bus_last;                  /* the last word read */
     uint8_t bus_count[2];               /* T41: accesses at a too fast clock */
     bool bus_hung;                      /* an access that never completes */
+    bool clk_hang;                      /* a clock above its limit hangs it */
+    bool clk_logged[2];                 /* the core's and the MSCA's logged */
     /*
      * T41: the raw WDMA's queue of buffers for frames, its done FIFO, the
      * RDMA's, whether the WDMA takes the raw frame (else the IR channel's)

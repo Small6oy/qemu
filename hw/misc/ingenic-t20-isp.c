@@ -183,6 +183,7 @@
 #include "system/address-spaces.h"
 #include "hw/misc/ingenic-t20-isp.h"
 #include "hw/misc/ingenic-cgu.h"
+#include "hw/misc/ingenic-bus-hang.h"
 #include "hw/misc/ingenic-isp.h"
 #include "hw/sensor/image-sensor.h"
 #include "trace.h"
@@ -2158,11 +2159,45 @@ static uint32_t t20_isp_reg_read(IngenicT20IspState *s, hwaddr off)
     return R(off);
 }
 
+/*
+ * Whether an access hangs the bus for a clock above what the part is known
+ * to take (max_khz: the vendor's, not measured). A T20X's hung at its first
+ * access with the gate open and the divider passing the bare MPLL (1 GHz).
+ */
+static bool t20_isp_clock_over(IngenicT20IspState *s, hwaddr off, bool write)
+{
+    const IngenicT20IspClass *c = INGENIC_T20_ISP_GET_CLASS(s);
+
+    if (!c->max_khz || !s->cpm || s->gated) {
+        return false;
+    }
+    if (ingenic_clock_over("ingenic-t20-isp", "ISP",
+                           ingenic_cgu_hz(s->cpm, c->ispcdr),
+                           c->max_khz * 1000ULL, s->clk_hang,
+                           &s->clk_logged, off, write)) {
+        s->bus_hung = true;
+        return true;
+    }
+    return false;
+}
+
+static void t20_isp_clock(void *opaque, int n, int level)
+{
+    IngenicT20IspState *s = opaque;
+
+    s->gated = !level;
+}
+
 static uint64_t ingenic_t20_isp_read(void *opaque, hwaddr off, unsigned size)
 {
     IngenicT20IspState *s = INGENIC_T20_ISP(opaque);
-    uint32_t v = t20_isp_reg_read(s, off);
+    uint32_t v;
     char name[T20_ISP_NAME_LEN];
+
+    if (t20_isp_clock_over(s, off, false)) {
+        return 0;
+    }
+    v = t20_isp_reg_read(s, off);
 
     if (trace_event_get_state_backends(TRACE_INGENIC_T20_ISP_READ)) {
         trace_ingenic_t20_isp_read(off, v, t20_isp_pc(),
@@ -2208,6 +2243,9 @@ static void ingenic_t20_isp_write(void *opaque, hwaddr off, uint64_t value,
     uint32_t v = value, old;
     char name[T20_ISP_NAME_LEN];
 
+    if (t20_isp_clock_over(s, off, true)) {
+        return;
+    }
     if (trace_event_get_state_backends(TRACE_INGENIC_T20_ISP_WRITE)) {
         trace_ingenic_t20_isp_write(off, v, t20_isp_pc(),
                                     t20_isp_reg_name(s, off, name));
@@ -2271,6 +2309,8 @@ static void ingenic_t20_isp_reset_hold(Object *obj, ResetType type)
     const IngenicT20IspClass *c = INGENIC_T20_ISP_GET_CLASS(s);
 
     timer_del(s->frame_timer);
+    s->clk_logged = false;
+    s->bus_hung = false;
     memset(s->regs, 0, sizeof(s->regs));
     for (unsigned i = 0; i < c->resets; i++) {
         R(c->reset[i].off) = c->reset[i].val;
@@ -2298,6 +2338,7 @@ static void ingenic_t20_isp_init(Object *obj)
                           TYPE_INGENIC_T20_ISP, INGENIC_T20_ISP_IOSIZE);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
+    qdev_init_gpio_in_named(DEVICE(obj), t20_isp_clock, "clock", 1);
     qdev_init_gpio_out_named(DEVICE(obj), &s->frame_start, "frame-start", 1);
     qdev_init_gpio_out_named(DEVICE(obj), &s->frame_out, "frame-out", 1);
     s->frame_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, t20_isp_frame, s);
@@ -2341,6 +2382,8 @@ static const VMStateDescription vmstate_ingenic_t20_isp = {
 static const Property ingenic_t20_isp_properties[] = {
     DEFINE_PROP_LINK("cpm", IngenicT20IspState, cpm, TYPE_INGENIC_CGU,
                      Object *),
+    DEFINE_PROP_BOOL("bus-hung", IngenicT20IspState, bus_hung, false),
+    DEFINE_PROP_BOOL("clock-hang", IngenicT20IspState, clk_hang, false),
     DEFINE_INGENIC_FRAME_TAP_PROPERTY(IngenicT20IspState, tap),
 };
 
@@ -2396,6 +2439,7 @@ static void ingenic_t20_isp_class_init(ObjectClass *oc, const void *data)
     dc->vmsd = &vmstate_ingenic_t20_isp;
     device_class_set_props(dc, ingenic_t20_isp_properties);
     INGENIC_T20_ISP_CLASS(oc)->ispcdr = 0x80;
+    INGENIC_T20_ISP_CLASS(oc)->max_khz = 100000;
     INGENIC_T20_ISP_CLASS(oc)->keep = ingenic_t20_isp_keep;
     INGENIC_T20_ISP_CLASS(oc)->keeps = ARRAY_SIZE(ingenic_t20_isp_keep);
     rc->phases.hold = ingenic_t20_isp_reset_hold;
@@ -2433,6 +2477,7 @@ static void ingenic_t10_isp_class_init(ObjectClass *oc, const void *data)
 static void ingenic_t30_isp_class_init(ObjectClass *oc, const void *data)
 {
     DEVICE_CLASS(oc)->desc = "Ingenic T30 ISP and VIC";
+    INGENIC_T20_ISP_CLASS(oc)->max_khz = 150000;
     INGENIC_T20_ISP_CLASS(oc)->line_buffer = true;
     INGENIC_T20_ISP_CLASS(oc)->raw_blank = BIT(0);
     INGENIC_T20_ISP_CLASS(oc)->keep = ingenic_t30_isp_keep;
