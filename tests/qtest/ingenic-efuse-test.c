@@ -110,7 +110,7 @@ static const EfuseCase cases[] = {
     }, {
         .part = "t23n", .machine = "ingenic-t23", .soc = "ingenic-t31",
         .variant = "t23n", .mode = BY_WORD, .nwords = 24,
-        .window = { ID0, ID1, ID2, [4] = 0x01000000, [5] = 0x40000000,
+        .window = { ID0, ID1, ID2, [4] = 0x01000000, [5] = 0xc0000000,
                     [14] = 0x11111111 },
         .ctrl_mask = 0x03e00000, .addr_bits = 5, .state_hi = 0x100,
         .latches = true, .ctrl_boot = 0, .latch_word = 0,

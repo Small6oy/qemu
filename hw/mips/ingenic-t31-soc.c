@@ -930,6 +930,7 @@ static const IngenicT31Efuse ingenic_t10_efuse = {
  * and T31X match theirs, a T21N misses by bit 24, T23 and T32 read 0.
  */
 #define EFUSE_MXU_LICENCE   0x5f8040b7
+#define EFUSE_T23N_TYPE1    0x11111111
 
 /* The T20's window shows its grade and licence but not its chip ID */
 static const IngenicT31Efuse ingenic_t20_efuse = {
@@ -944,7 +945,10 @@ static const IngenicT31Efuse ingenic_t21_efuse = {
     .word = { [4] = 0x01000000, [15] = EFUSE_MXU_LICENCE ^ BIT(24) },
 };
 
-/* Word 5 is 0x40000000 on a T23DL, 0xc0000000 on a T23N */
+/*
+ * Word 5 is 0x40000000 on a T23DL and 0xc0000000 on a T23N (both read
+ * on silicon); the other grades are taken to read the DL's
+ */
 static const IngenicT31Efuse ingenic_t23_efuse = {
     .ctrl_mask = 0x03e00000, .addr_bits = 5,
     .mirror = 0x200, .words = 24,
@@ -1043,6 +1047,13 @@ static uint32_t ingenic_t31_efuse_fuse(IngenicT31State *s, hwaddr offset)
         }
         return s->efuse_zkey ? deposit32(e->word[4], 24, 8, s->efuse_zkey) :
                e->word[4];
+    case 0x214:
+        /* word 5: the T23N's differs from the rest of the family's */
+        if (e == &ingenic_t23_efuse &&
+            s->efuse_subsoctype1 == EFUSE_T23N_TYPE1) {
+            return 0xc0000000;
+        }
+        return e->word[5];
     case EFUSE_SUBREMARK:
         return 0x00000000;
     case EFUSE_T33_VARIANT: /* 0x21C */
