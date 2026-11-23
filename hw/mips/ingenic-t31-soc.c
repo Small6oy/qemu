@@ -375,48 +375,120 @@ static void ingenic_t31_clock_gates(const T31Variant *v, uint32_t *gr)
 }
 
 /*
- * The CPM as thingino's U-Boot leaves it, read back at its prompt on a T10L,
- * T20X, T21N, T23N, T30X and T31X: CPCCR, DDRCDR, MACCDR, MSC0CDR and SSICDR
- * for the variants whose PLLs (CPAPCR and CPMPCR, lock bit apart) are those
- * its firmware sets. A variant with no row keeps the reset values.
+ * The CPM as thingino's U-Boot leaves it, for a -kernel boot: the PLLs
+ * (CPAPCR and CPMPCR, lock bit apart), CPCCR and the dividers U-Boot sets,
+ * the I2S, LCD and the like keeping the reset values. A row is named by its
+ * variants, else it is the one whose PLLs the variant's table gives; a
+ * variant with no row keeps the reset values. Where thingino builds one
+ * U-Boot for several parts, they share its row.
+ *
+ * Measured at the U-Boot prompt: T10L, T20X, T21N, T30X and T31X (the
+ * 2013.07 builds), T23N, T23 dual and T23DL, T32LQ (the 2026.10 build). The
+ * rows marked "source" were not read on a part: they are the 2026.10 U-Boot's
+ * DTS and clock code, the dividers worked out by the rule the measured parts
+ * of the family follow (the MAC and SFC clocks 50 MHz off the MPLL, the T32's
+ * MSC0 25 MHz).
  */
 typedef struct {
+    const char *names;      /* space separated, NULL: matched by PLLs */
     uint32_t apll, mpll;
     uint32_t cpccr, ddrcdr, maccdr, msc0cdr, ssicdr;
+    uint32_t extra[8];      /* offset and value, 0 ends */
 } T31UbootClocks;
 
+/* The VPU, CIM and ISP dividers, as the 2026.10 U-Boot parks them */
+#define T23_PARKS   { 0x30, 0x60000000, 0x7c, 0x20000000, 0x80, 0x20000000 }
+#define T32_PARKS(sfc0)  { 0x30, 0x60000000, 0x58, (sfc0), 0x7c, 0x60000000, \
+                           0x80, 0x60000000 }
+
 static const T31UbootClocks t31_uboot_clocks[] = {
-    { 0x03b08909, 0x06405109, 0x9a7b5510, 0xa0000002,
+    { NULL, 0x03b08909, 0x06405109, 0x9a7b5510, 0xa0000002,
       0xa0000017, 0x2000000e, 0xe0000017 },     /* T10L */
-    { 0x04708909, 0x06405109, 0x9a7b5510, 0xa0000002,
+    { NULL, 0x04708909, 0x06405109, 0x9a7b5510, 0xa0000002,
       0xa0000017, 0x20000011, 0xe0000017 },     /* T10N */
-    { 0x03b08909, 0x07d0c909, 0x9a794410, 0xa0000001,
+    { NULL, 0x03b08909, 0x07d0c909, 0x9a794410, 0xa0000001,
       0x60000013, 0x2000000e, 0xa000000e },     /* T20L */
-    { 0x04708909, 0x07d0c909, 0x9a794410, 0xa0000001,
-      0x60000013, 0x20000011, 0xa0000011 },     /* T20N */
-    { 0x04704849, 0x04a04849, 0x9a773310, 0xa0000001,
+    /* The T20X's MPLL is 1000 MHz as the T20N's, not the 1200 of its table */
+    { "t20n t20x", 0x04708909, 0x07d0c909, 0x9a794410, 0xa0000001,
+      0x60000013, 0x20000011, 0xa0000011 },
+    { NULL, 0x04704849, 0x04a04849, 0x9a773310, 0xa0000001,
       0x60000023, 0x20000007, 0x50000010 },     /* T21N */
-    { 0x1290d109, 0x06405109, 0x9a7b5510, 0xa0000001,
-      0x6000002f, 0x20000018, 0x50000017 },     /* T23N */
-    { 0x07c05049, 0x07c08829, 0x9a773310, 0xa0000001,
+    /* The T23's MAC clock is left parked unless U-Boot brings the MAC up */
+    { "t23n t23x", 0x1290d109, 0x06405109, 0x9a7b5510, 0xa0000001,
+      0x60000000, 0x60000031, 0x50000017, T23_PARKS },
+    { "t23dl", 0x1290d109, 0x06405109, 0x9a7b5510, 0xa0000001,
+      0x60000017, 0x60000031, 0x50000017, T23_PARKS },
+    /* source: APLL 1400 MPLL 1200, the DDR at MPLL/3; the ZX takes the ZN's */
+    { "t23zn t23zx", 0x15e0d109, 0x06405109, 0x9a7b5510, 0xa0000002,
+      0x60000000, 0x60000031, 0x50000017, T23_PARKS },
+    { "t23dn", 0x15e0d109, 0x06405109, 0x9a7b5510, 0xa0000001,
+      0x60000000, 0x60000031, 0x50000017, T23_PARKS },
+    { NULL, 0x07c05049, 0x07c08829, 0x9a773310, 0xa0000001,
       0x60000013, 0x2000000e, 0x5000000e },     /* T30L */
-    { 0x04a04849, 0x07c08829, 0x9a773310, 0xa0000001,
+    { NULL, 0x04a04849, 0x07c08829, 0x9a773310, 0xa0000001,
       0x60000013, 0x20000012, 0x50000011 },     /* T30N, T30X */
-    { 0x09508829, 0x09508829, 0x9a7b5510, 0xa0000001,
+    { NULL, 0x09508829, 0x09508829, 0x9a7b5510, 0xa0000001,
       0x60000017, 0x20000018, 0x50000017 },     /* T30A */
-    { 0x05405109, 0x07d05909, 0x9a773310, 0xa0000001,
+    { NULL, 0x05405109, 0x07d05909, 0x9a773310, 0xa0000001,
       0x60000013, 0x20000014, 0x50000013 },     /* T31L */
-    { 0x07505109, 0x07d05909, 0x9a773310, 0xa0000001,
-      0x60000013, 0x2000001c, 0x50000013 },     /* T31N */
-    { 0x07405109, 0x06405109, 0x9a7b5510, 0xa0000001,
-      0x60000017, 0x2000001c, 0x50000017 },     /* T31X, T31ZX, T31AL */
+    /* thingino builds the ZL with the N's U-Boot */
+    { "t31n t31zl", 0x07505109, 0x07d05909, 0x9a773310, 0xa0000001,
+      0x60000013, 0x2000001c, 0x50000013 },
+    /* thingino builds the ZX and ZC with the X's U-Boot */
+    { "t31x t31zx t31al t31zc", 0x07405109, 0x06405109, 0x9a7b5510,
+      0xa0000001, 0x60000017, 0x2000001c, 0x50000017 },
+    /* source: APLL 1512 MPLL 1500, the DDR at MPLL/2 */
+    { "t31a", 0x07e05109, 0x07d05109, 0x9a7b5510, 0xa0000001,
+      0x6000001d, 0x2000001e, 0x5000001d },
+    /* source: APLL 1104 MPLL 1000 as the L's tree */
+    { "t31lc", 0x05c05109, 0x07d05909, 0x9a773310, 0xa0000001,
+      0x60000013, 0x20000016, 0x50000013 },
+    /*
+     * T32LQ: measured (APLL 900 MPLL 1200, the DDR 300 MHz). The SFC0's own
+     * divider, 50 MHz, and the MSC0's 25 MHz, off the MPLL; the SSI has none
+     */
+    { NULL, 0x04b05109, 0x06405109, 0x9a7b5510, 0xa0000003,
+      0x20000000, 0x6000c02f, 0, T32_PARKS(0x60000117) },
+    /* source: T32NQ, XQ and A, APLL 1200 MPLL 900, the DDR 450 MHz */
+    { NULL, 0x06405109, 0x04b05109, 0x9a052210, 0xa0000001,
+      0x20000000, 0x6000c023, 0, T32_PARKS(0x60000111) },
+    /* source: T32VN, VX, ZN, ZX and the like, APLL 900 MPLL 1400, DDR 350 */
+    { NULL, 0x04b05109, 0x0af05909, 0x9a094410, 0xa0000003,
+      0x20000000, 0x6000c037, 0, T32_PARKS(0x6000011b) },
+    /*
+     * T33, source: the PLL words, CPCCR and the DDR divider the SPL writes
+     * (its bit 7 and 6 set), by the DDR bin of the grade
+     */
+    { "t33n t33a", 0x1db0e1c9, 0x04b051c9, 0x9a052210, 0xa0000001 },
+    { "t33l t33dl", 0x1db0e1c9, 0x145099c9, 0x9a094410, 0xa0000003 },
+    { "t33zl t33vl", 0x1290a1c9, 0x113099c9, 0x9a073310, 0xa0000003 },
+    { "t33zn t33vn", 0x1290a1c9, 0x0af099c9, 0x9a094410, 0xa0000001 },
 };
+
+static bool t31_name_in(const char *names, const char *name)
+{
+    gchar **v = g_strsplit(names, " ", -1);
+    bool found = false;
+
+    for (int i = 0; v[i]; i++) {
+        found |= !g_ascii_strcasecmp(v[i], name);
+    }
+    g_strfreev(v);
+    return found;
+}
 
 static const T31UbootClocks *ingenic_t31_uboot_clocks(const T31Variant *v)
 {
+    for (int i = 0; i < ARRAY_SIZE(t31_uboot_clocks); i++) {
+        if (t31_uboot_clocks[i].names &&
+            t31_name_in(t31_uboot_clocks[i].names, v->name)) {
+            return &t31_uboot_clocks[i];
+        }
+    }
     /* The PLL lock bit (2) reads 1 on silicon, 0 in the variant table */
     for (int i = 0; i < ARRAY_SIZE(t31_uboot_clocks); i++) {
-        if ((v->apll & ~4u) == t31_uboot_clocks[i].apll &&
+        if (!t31_uboot_clocks[i].names &&
+            (v->apll & ~4u) == t31_uboot_clocks[i].apll &&
             (v->mpll & ~4u) == t31_uboot_clocks[i].mpll) {
             return &t31_uboot_clocks[i];
         }
@@ -586,8 +658,9 @@ Clock *ingenic_t31_cpu_clock(IngenicT31State *s)
     const T31Variant *v = ingenic_t31_find_variant(s->soc_variant);
     DeviceState *cpm = DEVICE(&s->cpm);
     uint32_t gr[2];
-    uint32_t uboot_regs[6];
+    uint32_t uboot_regs[6 + 8];
     int nuboot = 0;
+    const T31UbootClocks *u = NULL;
 
     ingenic_t31_clock_gates(v, gr);
     qdev_prop_set_uint32(cpm, "clkgr0", gr[0]);
@@ -692,9 +765,9 @@ Clock *ingenic_t31_cpu_clock(IngenicT31State *s)
      */
     {
         MachineState *ms = MACHINE(qdev_get_machine());
-        const T31UbootClocks *u = ms->kernel_filename && !ms->firmware ?
-                                  ingenic_t31_uboot_clocks(v) : NULL;
 
+        u = ms->kernel_filename && !ms->firmware ?
+            ingenic_t31_uboot_clocks(v) : NULL;
         if (u) {
             uboot_regs[nuboot++] = 0x54;
             uboot_regs[nuboot++] = u->maccdr;
@@ -702,6 +775,10 @@ Clock *ingenic_t31_cpu_clock(IngenicT31State *s)
             uboot_regs[nuboot++] = u->msc0cdr;
             uboot_regs[nuboot++] = 0x74;
             uboot_regs[nuboot++] = u->ssicdr;
+            for (int i = 0; u->extra[i]; i += 2) {
+                uboot_regs[nuboot++] = u->extra[i];
+                uboot_regs[nuboot++] = u->extra[i + 1];
+            }
             qdev_prop_set_uint32(cpm, "cpccr", u->cpccr);
             qdev_prop_set_uint32(cpm, "ddrcdr", u->ddrcdr);
         }
@@ -766,9 +843,9 @@ Clock *ingenic_t31_cpu_clock(IngenicT31State *s)
             qdev_prop_set_uint32(cpm, "clkgr0", gr[0] & ~(1u << 15));
         }
         if (kernel || fam == 0x0033 || v->cpuid == T32PRO_CPUID) {
-            qdev_prop_set_uint32(cpm, "apll", v->apll);
+            qdev_prop_set_uint32(cpm, "apll", u ? u->apll : v->apll);
             qdev_prop_set_uint32(cpm, "apll-frac", v->apll_frac);
-            qdev_prop_set_uint32(cpm, "mpll", v->mpll);
+            qdev_prop_set_uint32(cpm, "mpll", u ? u->mpll : v->mpll);
             if (ms->firmware) {
                 qdev_prop_set_uint32(cpm, "cpccr", 0x55800000);
             }
