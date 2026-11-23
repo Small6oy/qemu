@@ -495,9 +495,16 @@ void ingenic_a1_check_ram(IngenicA1State *s, uint64_t ram_size)
     }
 }
 
+static const uint32_t a1_uboot[] = {
+    0x3c, 0xa0000001, 0x90, 0x60000007, 0x94, 0x60000007,
+    0x98, 0xe030800e, 0xb0, 0x80000800, 0xb4, 0x80000000,
+    0xb8, 0x80000000, 0xbc, 0x80000000, 0xc0, 0xe000001d,
+    0xc4, 0xc0000000, 0xc8, 0x00020201, 0xcc, 0xe000001d,
+    0xd0, 0xc0000000, 0xd4, 0xc0000000, 0xd8, 0x00020201,
+};
+
 Clock *ingenic_a1_cpu_clock(IngenicA1State *s)
 {
-    const A1Variant *v = ingenic_a1_find_variant(s->soc_variant);
     IngenicA1CpmState *cpm = &s->cpm;
 
     /* The bootrom runs from EXTCLK, CPCCR still 0 */
@@ -514,10 +521,20 @@ Clock *ingenic_a1_cpu_clock(IngenicA1State *s)
     } else {
         /* As the vendor U-Boot leaves it; EPLL 1500 MHz, VPLL 1200 MHz */
         cpm->regs[0x00 / 4] = 0x9a7f7520;
-        cpm->regs[0x10 / 4] = v->apll;
-        cpm->regs[0x14 / 4] = v->mpll;
+        /* thingino builds every grade with the A1N's U-Boot */
+        cpm->regs[0x10 / 4] = MNOD(92, 1, 2, 1);
+        cpm->regs[0x14 / 4] = MNOD(134, 1, 2, 1);
         cpm->regs[0x18 / 4] = MNOD(125, 1, 2, 1) | PLL_ON_EN;
         cpm->regs[0x1c / 4] = MNOD(100, 1, 2, 1) | PLL_ON_EN;
+        /*
+         * The dividers as a 2013.07 U-Boot leaves them on an A1N: the DDR
+         * (MPLL/2), the MACs and the MSC0, the VDEV and the MAC clocks'
+         * parking. The bench A1N runs Ingenic's demo image, not thingino,
+         * so the 2026.10 U-Boot's were not read.
+         */
+        for (int i = 0; i < ARRAY_SIZE(a1_uboot); i += 2) {
+            cpm->regs[a1_uboot[i] / 4] = a1_uboot[i + 1];
+        }
         cpm->regs[0x30 / 4] = 0xe0b00500;               /* CLKGR0 */
         cpm->regs[0x38 / 4] = 0x0000daff;               /* CLKGR1 */
     }

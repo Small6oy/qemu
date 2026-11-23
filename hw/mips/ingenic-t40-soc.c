@@ -503,6 +503,34 @@ static const MemoryRegionOps t40_efuse_ops = {
                                  ((od1) << 11) | ((od0) << 8) | PLL_ON_EN)
 
 /*
+ * The dividers thingino's U-Boot leaves besides the PLLs and CPCCR, as read
+ * back at its prompt: the DDR's, the MAC's, the SFC0's and the MSC0's, per
+ * plan. The A and the other T41 grades are built with the NQ's U-Boot, the
+ * ZL with the LQ's (the A on NAND has no U-Boot of its own here), as
+ * thingino maps them.
+ */
+typedef struct {
+    uint32_t ddrcdr, maccdr, sfc0cdr, msc0cdr;
+} T40UbootClocks;
+
+/* measured on a T40N: APLL 912 MPLL 1000 */
+static const T40UbootClocks t40n_uboot = {
+    0xa0000001, 0x60000013, 0x60000013, 0x20108008
+};
+/* measured on a T40XP: APLL 1008 MPLL 1200; the T40A takes it too */
+static const T40UbootClocks t40xp_uboot = {
+    0xa0000001, 0x60000017, 0x60000017, 0x20108009
+};
+/* measured on a T41NQ: APLL 1104 MPLL 1400 */
+static const T40UbootClocks t41nq_uboot = {
+    0xa0000001, 0x6000001b, 0x6000011b, 0x2010800a
+};
+/* measured on a T41LQ: APLL 1104 MPLL 1200 */
+static const T40UbootClocks t41lq_uboot = {
+    0xa0000001, 0x60000017, 0x60000117, 0x2010800a
+};
+
+/*
  * The PLL words and CPCCR the vendor U-Boot programs, which the CPM starts
  * from outside -bios. T41 encodes its PLLs as INGENIC_PLL_PLLREG.
  */
@@ -518,6 +546,7 @@ typedef struct {
     uint32_t cpccr;
     IngenicPllFormat pll;
     bool t41;            /* T41 address map */
+    const T40UbootClocks *uboot;
 } T40Variant;
 
 static const T40Variant t40_variants[] = {
@@ -525,37 +554,39 @@ static const T40Variant t40_variants[] = {
      * The T40 and the T41 both read cpuid 0x10040003 (family 0x0040); the
      * grade is the upper half of SUBSOCTYPE2, with the codes the vendor
      * libimp names (T40 1.3.1, T41 1.2.6). Whole words as measured on a
-     * T40N, T40NN, T40XP, T41NQ and T41LQ. APLL/MPLL 912/1100, 1008/1400.
+     * T40N, T40NN, T40XP, T41NQ and T41LQ. The PLLs and CPCCR are those
+     * thingino's U-Boot leaves, as a T40N (APLL 912, MPLL 1000), T40XP (1008,
+     * 1200), T41NQ (1104, 1400) and T41LQ (1104, 1200) read them.
      * The lower half names the part to a Zeratul SPL, which prints "error
      * ddr_check" for one it does not know: the ZL's SPL takes 0x1111 and
      * the ZM's 0x4444, as read from their code.
      */
-    { "t40n", 0x10040003, 0x11111111, MNOD(76, 1, 2, 1), MNOD(275, 2, 3, 1),
-      128, true, 512, 0x9a7b5510, INGENIC_PLL_MNOD },
-    { "t40nn", 0x10040003, 0x88881111, MNOD(76, 1, 2, 1), MNOD(275, 2, 3, 1),
-      128, true, 512, 0x9a7b5510, INGENIC_PLL_MNOD },
-    { "t40xp", 0x10040003, 0x77772222, MNOD(84, 1, 2, 1), MNOD(350, 2, 3, 1),
-      256, true, 512, 0x9a7b5510, INGENIC_PLL_MNOD },
-    { "t40a", 0x10040003, 0x44440000, MNOD(84, 1, 2, 1), MNOD(350, 2, 3, 1),
-      512, true, 512, 0x9a7b5510, INGENIC_PLL_MNOD },
+    { "t40n", 0x10040003, 0x11111111, MNOD(76, 1, 2, 1), MNOD(125, 1, 3, 1),
+      128, true, 512, 0x9a0b5510, INGENIC_PLL_MNOD, false, &t40n_uboot },
+    { "t40nn", 0x10040003, 0x88881111, MNOD(76, 1, 2, 1), MNOD(125, 1, 3, 1),
+      128, true, 512, 0x9a0b5510, INGENIC_PLL_MNOD, false, &t40n_uboot },
+    { "t40xp", 0x10040003, 0x77772222, MNOD(84, 1, 2, 1), MNOD(100, 1, 2, 1),
+      256, true, 512, 0x9a0b5510, INGENIC_PLL_MNOD, false, &t40xp_uboot },
+    { "t40a", 0x10040003, 0x44440000, MNOD(84, 1, 2, 1), MNOD(100, 1, 2, 1),
+      512, true, 512, 0x9a0b5510, INGENIC_PLL_MNOD, false, &t40xp_uboot },
     /*
-     * T41 family: no EPLL. The PLLs the vendor U-Boot sets per grade: APLL
-     * 1104 (the A's 1300), MPLL 1400 (L, LQ and ZL 1200, N and ZN 1500, ZG
-     * 1000, A 1600); the RAM in package per Ingenic's version notes, the
-     * A's external, 256 MiB in the vendor's bootargs
+     * T41 family: no EPLL. The PLLs thingino's U-Boot sets per plan: APLL
+     * 1104, MPLL 1400 for the NQ's and every grade built with it, 1200 for
+     * the LQ's (L, LC, ZL); the RAM in package per Ingenic's version notes,
+     * the A's external, 256 MiB in the vendor's bootargs
      */
     { "t41nq", 0x10040003, 0xAAAA2222, 0x05b008bd, 0x15d0889d, 128, false, 256,
-      0x9a7b5520, INGENIC_PLL_PLLREG, true },
+      0x9a0b5520, INGENIC_PLL_PLLREG, true, &t41nq_uboot },
     { "t41lq", 0x10040003, 0x99991111, 0x05b008bd, 0x063008bd, 64, false, 256,
-      0x9a7b5520, INGENIC_PLL_PLLREG, true },
-    { "t41zn", 0x10040003, 0x77772222, 0x05b008bd, 0x1760889d, 128, false, 256,
-      0x9a7b5520, INGENIC_PLL_PLLREG, true },
+      0x9a0b5520, INGENIC_PLL_PLLREG, true, &t41lq_uboot },
+    { "t41zn", 0x10040003, 0x77772222, 0x05b008bd, 0x15d0889d, 128, false, 256,
+      0x9a0b5520, INGENIC_PLL_PLLREG, true, &t41nq_uboot },
     { "t41xq", 0x10040003, 0x22220000, 0x05b008bd, 0x15d0889d, 256, false, 256,
-      0x9a7b5520, INGENIC_PLL_PLLREG, true },
+      0x9a0b5520, INGENIC_PLL_PLLREG, true, &t41nq_uboot },
     { "t41zx", 0x10040003, 0x66660000, 0x05b008bd, 0x15d0889d, 256, false, 256,
-      0x9a7b5520, INGENIC_PLL_PLLREG, true },
-    { "t41n", 0x10040003, 0x11110000, 0x05b008bd, 0x1760889d, 128, false, 256,
-      0x9a7b5520, INGENIC_PLL_PLLREG, true },
+      0x9a0b5520, INGENIC_PLL_PLLREG, true, &t41nq_uboot },
+    { "t41n", 0x10040003, 0x11110000, 0x05b008bd, 0x15d0889d, 128, false, 256,
+      0x9a0b5520, INGENIC_PLL_PLLREG, true, &t41nq_uboot },
     /*
      * The LC's grade code 0x8888 is the vendor SPL's (common/spl/spl.c of
      * the T41 U-Boot prints "Board info: T41LC" for it); the T40NN carries
@@ -564,22 +595,22 @@ static const T40Variant t40_variants[] = {
      * not known and stays 0. No board here is an LC: not measured.
      */
     { "t41lc", 0x10040003, 0x88880000, 0x05b008bd, 0x063008bd, 64, false, 256,
-      0x9a7b5520, INGENIC_PLL_PLLREG, true },
+      0x9a0b5520, INGENIC_PLL_PLLREG, true, &t41lq_uboot },
     { "t41l", 0x10040003, 0x33330000, 0x05b008bd, 0x063008bd, 64, false, 256,
-      0x9a7b5520, INGENIC_PLL_PLLREG, true },
+      0x9a0b5520, INGENIC_PLL_PLLREG, true, &t41lq_uboot },
     { "t41zl", 0x10040003, 0x55551111, 0x05b008bd, 0x063008bd, 64, false, 256,
-      0x9a7b5520, INGENIC_PLL_PLLREG, true },
+      0x9a0b5520, INGENIC_PLL_PLLREG, true, &t41lq_uboot },
     { "t41zm", 0x10040003, 0xBBBB4444, 0x05b008bd, 0x15d0889d, 128, false, 256,
-      0x9a7b5520, INGENIC_PLL_PLLREG, true },
-    { "t41zg", 0x10040003, 0xCCCC0000, 0x05b008bd, 0x07c0093d, 256, false, 256,
-      0x9a7b5520, INGENIC_PLL_PLLREG, true },
-    { "t41a", 0x10040003, 0x44440000, 0x1440889d, 0x0c70881d, 256, false, 256,
-      0x9a7b5520, INGENIC_PLL_PLLREG, true },
+      0x9a0b5520, INGENIC_PLL_PLLREG, true, &t41nq_uboot },
+    { "t41zg", 0x10040003, 0xCCCC0000, 0x05b008bd, 0x15d0889d, 256, false, 256,
+      0x9a0b5520, INGENIC_PLL_PLLREG, true, &t41nq_uboot },
+    { "t41a", 0x10040003, 0x44440000, 0x05b008bd, 0x15d0889d, 256, false, 256,
+      0x9a0b5520, INGENIC_PLL_PLLREG, true, &t41nq_uboot },
     /* Default */
-    { "qemu", 0x10040003, 0xEE000000, MNOD(76, 1, 2, 1), MNOD(275, 2, 3, 1),
-      256, true, 512, 0x9a7b5510, INGENIC_PLL_MNOD },
+    { "qemu", 0x10040003, 0xEE000000, MNOD(76, 1, 2, 1), MNOD(125, 1, 3, 1),
+      256, true, 512, 0x9a0b5510, INGENIC_PLL_MNOD, false, &t40n_uboot },
     { "qemu-t41", 0x10040003, 0xEE010000, 0x05b008bd, 0x15d0889d, 256, false,
-      256, 0x9a7b5520, INGENIC_PLL_PLLREG, true },
+      256, 0x9a0b5520, INGENIC_PLL_PLLREG, true, &t41nq_uboot },
     { NULL, 0, 0, 0, 0, 0, false, 0 }
 };
 
@@ -633,7 +664,8 @@ Clock *ingenic_t40_cpu_clock(IngenicT40State *s)
     cpm->regs[0x10 / 4] = v->apll;
     cpm->regs[0x14 / 4] = v->mpll;
     if (v->has_epll) {
-        cpm->regs[0x58 / 4] = MNOD(125, 1, 2, 1) | PLL_ON_EN;
+        /* U-Boot leaves the EPLL off */
+        cpm->regs[0x58 / 4] = 0x010049c0;
     }
     /*
      * The VPLL off at power-on and from the bootrom, the T40's left so by
@@ -690,6 +722,10 @@ Clock *ingenic_t40_cpu_clock(IngenicT40State *s)
     if (MACHINE(qdev_get_machine())->kernel_filename &&
         !MACHINE(qdev_get_machine())->firmware) {
         cpm->regs[0x00 / 4] = v->cpccr;
+        cpm->regs[0x2c / 4] = v->uboot->ddrcdr;
+        cpm->regs[0x54 / 4] = v->uboot->maccdr;
+        cpm->regs[0x60 / 4] = v->uboot->sfc0cdr;
+        cpm->regs[0x68 / 4] = v->uboot->msc0cdr;
         /* U-Boot opens UART1's gate, and no other, on a T40XP and T41LQ */
         cpm->regs[0x20 / 4] &= ~(1u << 15);
     }
