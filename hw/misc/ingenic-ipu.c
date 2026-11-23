@@ -16,7 +16,10 @@
  * The types are ARGB (4 bytes a pixel), NV12 and NV21 (no alpha: seen
  * only through the global alpha) and 16-bit (type 4: three 5-bit fields,
  * low first, in the order's colour bytes, alpha bit 15); RGB (type 1) and
- * types 5 to 7 draw nothing, nor does a PARA with bit 20 or 23 set.
+ * types 5 to 7 draw nothing, nor does a PARA with bit 20 set. With bit 23
+ * set the window is filled with the channel's IPU_OSD_CHn_BAK_ARGB as AYUV
+ * (not through bit 25) and no picture is read: libimp's COVER; bit 23 is
+ * from libimp's job, the vendor driver only passes PARA and BAK_ARGB on.
  * A pixel blends as (f * a + b * (255 - a) + 128) >> 8, alpha 0 and 255
  * exact, premultiplied as f + that of black; chroma blends each pixel's U
  * and V, then averages the 2x2 block as (sum + 2) >> 2.
@@ -69,6 +72,7 @@
 #define IPU_OSD_GS(n)       (0x0fc + (n) * 4)
 #define IPU_OSD_POS(n)      (0x10c + (n) * 4)
 #define IPU_OSD_PARA(n)     (0x11c + (n) * 4)
+#define IPU_OSD_BAK_ARGB(n) (0x130 + (n) * 4)
 #define IPU_CSC(n, i)       (0x148 + (n) * 0x18 + (i) * 4)  /* i = 5: offsets */
 
 #define STATUS_OUT_END      BIT(0)
@@ -82,7 +86,8 @@
 #define PARA_GLOBAL_ALPHA   BIT(1)
 #define PARA_ALPHA_X_GLOBAL BIT(2)
 #define PARA_PREMULTIPLIED  BIT(18)
-#define PARA_HIDDEN         (BIT(20) | BIT(23))
+#define PARA_HIDDEN         BIT(20)
+#define PARA_MASK           BIT(23)
 #define PARA_CSC            BIT(25)
 
 /* the output formats of D_FMT bits 6:0; NV12 is the OSD blend */
@@ -173,23 +178,86 @@ static void ipu_csc(IngenicIpuState *s, int n, IpuCsc *k)
     k->uvoff = extract32(c[5], 16, 16);
 }
 
+/*
+ * Blend a picture's @ow x @oh samples (@py, @pu, @pv, alpha @pa, one each per
+ * pixel) into the frame at (@ox, @oy)
+ */
+static void ipu_osd_blend(IngenicIpuState *s, uint32_t para, uint32_t ox,
+                          uint32_t oy, uint32_t ow, uint32_t oh,
+                          uint32_t w, uint32_t h, uint8_t *py, uint8_t *pu,
+                          uint8_t *pv, uint8_t *pa)
+{
+    int galpha = extract32(para, 3, 8);
+    uint32_t outs = R(IPU_OUT_STRIDE) ? R(IPU_OUT_STRIDE) : w;
+    uint32_t nvs = R(IPU_NV_OUT_STRIDE) ? R(IPU_NV_OUT_STRIDE) : w;
+    bool prem = para & PARA_PREMULTIPLIED;
+    g_autofree uint8_t *line = NULL;
+    uint32_t x0, x1;
+
+    for (int idx = 0; idx < ow * oh; idx++) {
+        if (para & PARA_GLOBAL_ALPHA) {
+            pa[idx] = galpha;
+        } else if (para & PARA_ALPHA_X_GLOBAL) {
+            pa[idx] = pa[idx] * galpha >> 8;
+        }
+    }
+
+    line = g_malloc(ow + 2);
+    for (uint32_t j = 0; j < oh; j++) {
+        hwaddr a = R(IPU_OUT_ADDR) + (hwaddr)(oy + j) * outs + ox;
+
+        dma_read(a, line, ow);
+        for (uint32_t i = 0; i < ow; i++) {
+            line[i] = mix(line[i], py[j * ow + i], pa[j * ow + i], prem);
+        }
+        dma_write(a, line, ow);
+    }
+
+    /*
+     * Chroma by 2x2 blocks: each pixel's own U and V blended, the four then
+     * averaged; a pixel of the block outside the picture keeps the frame's
+     */
+    x0 = ox & ~1u;
+    x1 = (ox + ow + 1) & ~1u;
+    for (uint32_t cy = oy / 2; cy < (oy + oh + 1) / 2; cy++) {
+        hwaddr a = R(IPU_NV_OUT_ADDR) + (hwaddr)cy * nvs + x0;
+
+        dma_read(a, line, x1 - x0);
+        for (uint32_t x = x0; x < x1; x += 2) {
+            for (int c = 0; c < 2; c++) {
+                const uint8_t *pc = c ? pv : pu;
+                int bg = line[x - x0 + c], sum = 0;
+
+                for (uint32_t yy = cy * 2; yy < cy * 2 + 2; yy++) {
+                    for (uint32_t xx = x; xx < x + 2; xx++) {
+                        if (yy >= oy && yy < oy + oh &&
+                            xx >= ox && xx < ox + ow) {
+                            int idx = (yy - oy) * ow + (xx - ox);
+
+                            sum += mix(bg, pc[idx], pa[idx], prem);
+                        } else {
+                            sum += bg;
+                        }
+                    }
+                }
+                line[x - x0 + c] = (sum + 2) >> 2;
+            }
+        }
+        dma_write(a, line, x1 - x0);
+    }
+}
+
 /* Blend OSD channel @n into the output frame (@w x @h), in place */
 static void ipu_osd(IngenicIpuState *s, int n, uint32_t w, uint32_t h)
 {
     uint32_t para = R(IPU_OSD_PARA(n));
     unsigned type = extract32(para, 11, 3);
-    int galpha = extract32(para, 3, 8);
     uint32_t gs = R(IPU_OSD_GS(n)), pos = R(IPU_OSD_POS(n));
     uint32_t ow = gs >> 16, oh = gs & 0xffff;
     uint32_t ox = pos >> 16, oy = pos & 0xffff;
     uint32_t stride = R(IPU_OSD_IN_Y_STRIDE(n));
-    uint32_t outs = R(IPU_OUT_STRIDE) ? R(IPU_OUT_STRIDE) : w;
-    uint32_t nvs = R(IPU_NV_OUT_STRIDE) ? R(IPU_NV_OUT_STRIDE) : w;
-    bool prem = para & PARA_PREMULTIPLIED;
     g_autofree uint8_t *pic = NULL, *picuv = NULL;
     g_autofree uint8_t *py = NULL, *pu = NULL, *pv = NULL, *pa = NULL;
-    g_autofree uint8_t *line = NULL;
-    uint32_t x0, x1;
     int bpp = 1, at[4];
     IpuCsc k;
 
@@ -287,57 +355,49 @@ static void ipu_osd(IngenicIpuState *s, int n, uint32_t w, uint32_t h)
             }
         }
     }
-    for (int idx = 0; idx < ow * oh; idx++) {
-        if (para & PARA_GLOBAL_ALPHA) {
-            pa[idx] = galpha;
-        } else if (para & PARA_ALPHA_X_GLOBAL) {
-            pa[idx] = pa[idx] * galpha >> 8;
-        }
+    ipu_osd_blend(s, para, ox, oy, ow, oh, w, h, py, pu, pv, pa);
+}
+
+/*
+ * Mask mode: the window filled with the channel's BAK_ARGB, read as AYUV in
+ * the PARA's byte order, through the same alpha rules; nothing is read
+ */
+static void ipu_osd_mask(IngenicIpuState *s, int n, uint32_t w, uint32_t h)
+{
+    uint32_t para = R(IPU_OSD_PARA(n));
+    uint32_t bak = R(IPU_OSD_BAK_ARGB(n));
+    unsigned type = extract32(para, 11, 3);
+    uint32_t gs = R(IPU_OSD_GS(n)), pos = R(IPU_OSD_POS(n));
+    uint32_t ow = gs >> 16, oh = gs & 0xffff;
+    uint32_t ox = pos >> 16, oy = pos & 0xffff;
+    g_autofree uint8_t *p = NULL;
+    uint8_t c[4];
+    int at[4];
+
+    if (type == PIC_RGB || type > PIC_1555) {
+        return;
     }
-
-    line = g_malloc(ow + 2);
-    for (uint32_t j = 0; j < oh; j++) {
-        hwaddr a = R(IPU_OUT_ADDR) + (hwaddr)(oy + j) * outs + ox;
-
-        dma_read(a, line, ow);
-        for (uint32_t i = 0; i < ow; i++) {
-            line[i] = mix(line[i], py[j * ow + i], pa[j * ow + i], prem);
-        }
-        dma_write(a, line, ow);
+    if (!ipu_argb_order(extract32(para, 14, 4), at)) {
+        qemu_log_mask(LOG_UNIMP, "ingenic-ipu: OSD byte order %u\n",
+                      extract32(para, 14, 4));
+        return;
     }
-
-    /*
-     * Chroma by 2x2 blocks: each pixel's own U and V blended, the four then
-     * averaged; a pixel of the block outside the picture keeps the frame's
-     */
-    x0 = ox & ~1u;
-    x1 = (ox + ow + 1) & ~1u;
-    for (uint32_t cy = oy / 2; cy < (oy + oh + 1) / 2; cy++) {
-        hwaddr a = R(IPU_NV_OUT_ADDR) + (hwaddr)cy * nvs + x0;
-
-        dma_read(a, line, x1 - x0);
-        for (uint32_t x = x0; x < x1; x += 2) {
-            for (int c = 0; c < 2; c++) {
-                const uint8_t *pc = c ? pv : pu;
-                int bg = line[x - x0 + c], sum = 0;
-
-                for (uint32_t yy = cy * 2; yy < cy * 2 + 2; yy++) {
-                    for (uint32_t xx = x; xx < x + 2; xx++) {
-                        if (yy >= oy && yy < oy + oh &&
-                            xx >= ox && xx < ox + ow) {
-                            int idx = (yy - oy) * ow + (xx - ox);
-
-                            sum += mix(bg, pc[idx], pa[idx], prem);
-                        } else {
-                            sum += bg;
-                        }
-                    }
-                }
-                line[x - x0 + c] = (sum + 2) >> 2;
-            }
-        }
-        dma_write(a, line, x1 - x0);
+    ow /= type == PIC_ARGB ? 4 : type == PIC_1555 ? 2 : 1;
+    ow = MIN(ow, ox < w ? w - ox : 0);
+    oh = MIN(oh, oy < h ? h - oy : 0);
+    if (!ow || !oh) {
+        return;
     }
+    for (int i = 0; i < 4; i++) {
+        c[i] = bak >> (24 - 8 * at[i]);
+    }
+    p = g_malloc(4 * (size_t)ow * oh);
+    memset(p, c[0], (size_t)ow * oh);
+    memset(p + (size_t)ow * oh, c[1], (size_t)ow * oh);
+    memset(p + 2 * (size_t)ow * oh, c[2], (size_t)ow * oh);
+    memset(p + 3 * (size_t)ow * oh, c[3], (size_t)ow * oh);
+    ipu_osd_blend(s, para, ox, oy, ow, oh, w, h, p, p + (size_t)ow * oh,
+                  p + 2 * (size_t)ow * oh, p + 3 * (size_t)ow * oh);
 }
 
 /* The HSV of a pixel: H in degrees, S and V out of 255 */
@@ -479,7 +539,12 @@ static void ipu_run(IngenicIpuState *s)
             }
         }
         for (int n = 0; n < INGENIC_IPU_OSD_CHANNELS; n++) {
-            if (R(IPU_OSD_PARA(n)) & PARA_EN) {
+            uint32_t para = R(IPU_OSD_PARA(n));
+
+            if ((para & (PARA_EN | PARA_HIDDEN | PARA_MASK)) ==
+                (PARA_EN | PARA_MASK)) {
+                ipu_osd_mask(s, n, w, h);
+            } else if (para & PARA_EN) {
                 ipu_osd(s, n, w, h);
             }
         }

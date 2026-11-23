@@ -281,6 +281,89 @@ static void test_case(const void *data)
     qtest_quit(qts);
 }
 
+static uint8_t mixv(int bg, int fg, int a)
+{
+    return a == 255 ? fg : (fg * a + bg * (255 - a) + 128) >> 8;
+}
+
+/*
+ * libimp's COVER job: PARA bit 23 with BAK_ARGB 0xff425af0 and no picture
+ * fills the window with that AYUV colour; the frame outside it is untouched
+ */
+static void test_mask(const void *data)
+{
+    uint32_t para = GPOINTER_TO_UINT(data);
+    QTestState *qts = qtest_init("-machine ingenic-t31");
+    uint8_t mem[1024], want[1024], got[1024];
+    size_t n = frame(mem, 8);
+    int a = para & 2 ? (para >> 3) & 0xff : 255;
+
+    memcpy(want, mem, n + 256);
+    for (unsigned y = 2; y < 6; y++) {
+        for (unsigned x = 8; x < 16; x++) {
+            want[y * W + x] = mixv(mem[y * W + x], 0x42, a);
+        }
+    }
+    for (unsigned y = 1; y < 3; y++) {
+        for (unsigned x = 8; x < 16; x += 2) {
+            uint8_t *c = want + W * 8 + y * W + x;
+
+            c[0] = mixv(c[0], 0x5a, a);
+            c[1] = mixv(c[1], 0xf0, a);
+        }
+    }
+    qtest_memwrite(qts, BG, mem, n + 256);
+    w32(qts, IPU_TRIGGER, 2);
+    w32(qts, IPU_TRIGGER, 8);
+    w32(qts, IPU_IN_FM_GS, W << 16 | 8);
+    w32(qts, IPU_Y_STRIDE, W);
+    w32(qts, IPU_UV_STRIDE, W << 16 | W);
+    w32(qts, IPU_Y_ADDR, BG);
+    w32(qts, IPU_U_ADDR, BG + W * 8);
+    w32(qts, IPU_OUT_ADDR, BG);
+    w32(qts, IPU_NV_OUT_ADDR, BG + W * 8);
+    w32(qts, IPU_OUT_STRIDE, W);
+    w32(qts, IPU_NV_OUT_STRIDE, W);
+    w32(qts, IPU_D_FMT, 0x12);
+    w32(qts, IPU_CH_BK_PARA, 2 << 11 | 1 << 18 | 1);
+    w32(qts, IPU_OSD_Y_ADDR, 0);
+    w32(qts, IPU_OSD_Y_STRIDE, 32);
+    w32(qts, IPU_OSD_GS, 32 << 16 | 4);
+    w32(qts, IPU_OSD_POS, 8 << 16 | 2);
+    w32(qts, IPU_OSD_BAK, 0xff425af0);
+    w32(qts, IPU_OSD_PARA, para);
+    w32(qts, IPU_STATUS, 0);
+    w32(qts, IPU_TRIGGER, 1);
+    g_assert_cmphex(qtest_readl(qts, IPU + IPU_STATUS) & 1, ==, 1);
+    qtest_memread(qts, BG, got, n + 256);
+    g_assert_cmpmem(got, n + 256, want, n + 256);
+    qtest_quit(qts);
+}
+
+/* bit 20 set as well: still nothing drawn */
+static void test_mask_hidden(void)
+{
+    QTestState *qts = qtest_init("-machine ingenic-t31");
+    uint8_t mem[1024], got[1024];
+    size_t n = frame(mem, 8);
+
+    qtest_memwrite(qts, BG, mem, n);
+    w32(qts, IPU_TRIGGER, 8);
+    w32(qts, IPU_IN_FM_GS, W << 16 | 8);
+    w32(qts, IPU_Y_ADDR, BG);
+    w32(qts, IPU_U_ADDR, BG + W * 8);
+    w32(qts, IPU_OUT_ADDR, BG);
+    w32(qts, IPU_NV_OUT_ADDR, BG + W * 8);
+    w32(qts, IPU_OSD_GS, 32 << 16 | 4);
+    w32(qts, IPU_OSD_POS, 8 << 16 | 2);
+    w32(qts, IPU_OSD_BAK, 0xff425af0);
+    w32(qts, IPU_OSD_PARA, 0x029007f9);
+    w32(qts, IPU_TRIGGER, 1);
+    qtest_memread(qts, BG, got, n);
+    g_assert_cmpmem(got, n, mem, n);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -290,5 +373,10 @@ int main(int argc, char **argv)
                                                 cases[i].name);
         qtest_add_data_func(path, &cases[i], test_case);
     }
+    qtest_add_data_func("ingenic-ipu/mask", GUINT_TO_POINTER(0x028007f9),
+                        test_mask);
+    qtest_add_data_func("ingenic-ipu/mask-global80",
+                        GUINT_TO_POINTER(0x02800403), test_mask);
+    qtest_add_func("ingenic-ipu/mask-bit20", test_mask_hidden);
     return g_test_run();
 }
