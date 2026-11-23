@@ -111,8 +111,11 @@
  * "writes-dropped", "writes-nacked"); the register "late-reg" lands
  * "late-frames" frames after the others ("writes-late"); "skip-nth" from
  * now and "skip-every" frame is not put out, which the VIC sees as a frame
- * missing ("frames", "frames-skipped"). The knobs and counters are saved
- * with the machine, with the writes still waiting.
+ * missing ("frames", "frames-skipped"). A write that sets a model's
+ * soft-reset bit (the registers vendor init tables reset it by) makes it
+ * NACK its address for "reset-busy-us" (default: the model's own, see
+ * image_sensor_soft_resets), traced as the fault "reset-busy". The knobs
+ * and counters are saved with the machine, with the writes still waiting.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -1340,6 +1343,50 @@ static const ImageSensorModel image_sensor_models[] = {
       .bayer = IMAGE_SENSOR_BGGR },
 };
 
+/*
+ * A soft reset: the register and bits a vendor init table writes to reset
+ * the part, and how long the part then ignores its I2C address. Only an
+ * OV9712's window is known to exist (its tables write 0x12 = 0x80 and go on
+ * at once, which silicon NACKs); a GC4653 answers the very next read after
+ * 0x03fe = 0xf0 (measured). The other tables go on after their reset with
+ * no delay and run on silicon, so their windows are 0 until measured; the
+ * "reset-busy-us" property sets one for any model.
+ */
+struct ImageSensorSoftReset {
+    const char *prefix;         /* the model names it covers */
+    uint8_t reg_bytes;
+    uint16_t reg;
+    uint8_t mask;               /* a write with (data & mask) == val resets */
+    uint8_t val;
+    uint32_t busy_us;
+};
+
+static const ImageSensorSoftReset image_sensor_soft_resets[] = {
+    { "ov9712", 1, 0x12, 0x80, 0x80, 150 },
+    { "ov2710", 2, 0x3008, 0x80, 0x80, 0 },
+    { "ov9732", 2, 0x0103, 0x01, 0x01, 0 },
+    { "ov9750", 2, 0x0103, 0x01, 0x01, 0 },
+    { "os05a10", 2, 0x0103, 0x01, 0x01, 0 },
+    { "os08", 2, 0x0103, 0x01, 0x01, 0 },
+    { "sc", 2, 0x0103, 0x01, 0x01, 0 },
+    { "gc", 1, 0xfe, 0x80, 0x80, 0 },
+    { "gc", 2, 0x03fe, 0xff, 0xf0, 0 },
+};
+
+static const ImageSensorSoftReset *image_sensor_soft_reset_of(
+    const ImageSensorModel *m)
+{
+    for (int i = 0; i < ARRAY_SIZE(image_sensor_soft_resets); i++) {
+        const ImageSensorSoftReset *r = &image_sensor_soft_resets[i];
+
+        if (r->reg_bytes == m->reg_bytes && g_str_has_prefix(m->name,
+                                                              r->prefix)) {
+            return r;
+        }
+    }
+    return NULL;
+}
+
 /* 75% colour bars, BT.601 limited range: Y, Cb, Cr */
 static const uint8_t image_sensor_bars[8][3] = {
     { 180, 128, 128 },          /* white */
@@ -1572,13 +1619,31 @@ static int image_sensor_event(I2CSlave *i2c, enum i2c_event event)
     ImageSensorState *s = IMAGE_SENSOR(i2c);
 
     if ((event == I2C_START_SEND || event == I2C_START_RECV) &&
-        !image_sensor_powered(s)) {
+        (!image_sensor_powered(s) ||
+         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) < s->reset_busy_until)) {
         return -1;
     }
     if (event == I2C_START_SEND) {
         s->addr_bytes = 0;
     }
     return 0;
+}
+
+static void image_sensor_soft_reset(ImageSensorState *s, uint16_t reg,
+                                    uint8_t data)
+{
+    const ImageSensorSoftReset *r = s->soft_reset;
+    uint32_t us;
+
+    if (!r || reg != r->reg || (data & r->mask) != r->val) {
+        return;
+    }
+    us = s->reset_busy_us == UINT32_MAX ? r->busy_us : s->reset_busy_us;
+    if (us) {
+        s->reset_busy_until = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                              us * (int64_t)SCALE_US;
+        trace_image_sensor_fault(s->input, "reset-busy", reg, us);
+    }
 }
 
 static int image_sensor_send(I2CSlave *i2c, uint8_t data)
@@ -1623,6 +1688,7 @@ static int image_sensor_send(I2CSlave *i2c, uint8_t data)
     image_sensor_store(s, reg, data, wdr_reset);
     image_sensor_indirect(s, reg, data);
     trace_image_sensor_write(s->input, reg, data);
+    image_sensor_soft_reset(s, reg, data);
     if (image_sensor_streaming(s) != streaming) {
         trace_image_sensor_stream(s->input, !streaming);
     }
@@ -3530,6 +3596,7 @@ static void image_sensor_realize(DeviceState *dev, Error **errp)
     if (!i2c->address) {
         i2c->address = s->model->addr;
     }
+    s->soft_reset = image_sensor_soft_reset_of(s->model);
     s->bayer = s->model->bayer;
     if (s->bayer_name) {
         static const char *const orders[] = { "rggb", "grbg", "gbrg",
@@ -3596,6 +3663,7 @@ static void image_sensor_reset_hold(Object *obj, ResetType type)
     s->page = 0;
     s->npend = 0;
     s->group_open = false;
+    s->reset_busy_until = 0;
     s->latch_frame = 0;
     s->n_latches = s->n_held = s->n_writes = s->n_dropped = s->n_nacked = 0;
     s->n_late = s->n_frames = s->n_skipped = 0;
@@ -3780,6 +3848,24 @@ static const VMStateDescription vmstate_image_sensor_pending = {
     }
 };
 
+static bool image_sensor_reset_busy_needed(void *opaque)
+{
+    ImageSensorState *s = opaque;
+
+    return s->reset_busy_until != 0;
+}
+
+static const VMStateDescription vmstate_image_sensor_reset_busy = {
+    .name = "image-sensor/reset-busy",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = image_sensor_reset_busy_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_INT64(reset_busy_until, ImageSensorState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_image_sensor = {
     .name = TYPE_IMAGE_SENSOR,
     .version_id = 5,
@@ -3833,6 +3919,10 @@ static const VMStateDescription vmstate_image_sensor = {
         VMSTATE_UINT64_V(n_frames, ImageSensorState, 5),
         VMSTATE_UINT64_V(n_skipped, ImageSensorState, 5),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_image_sensor_reset_busy,
+        NULL
     }
 };
 
@@ -3848,6 +3938,8 @@ static const Property image_sensor_props[] = {
     DEFINE_PROP_STRING("bayer", ImageSensorState, bayer_name),
     DEFINE_PROP_STRING("reset", ImageSensorState, reset),
     DEFINE_PROP_BOOL("mclk-gate", ImageSensorState, mclk_gate, true),
+    DEFINE_PROP_UINT32("reset-busy-us", ImageSensorState, reset_busy_us,
+                       UINT32_MAX),
 };
 
 static void image_sensor_class_init(ObjectClass *oc, const void *data)

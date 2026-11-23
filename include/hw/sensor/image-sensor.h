@@ -18,6 +18,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(ImageSensorState, IMAGE_SENSOR)
 #define IMAGE_SENSOR_INPUTS 4
 
 typedef struct ImageSensorModel ImageSensorModel;
+typedef struct ImageSensorSoftReset ImageSensorSoftReset;
 typedef struct ImageSensorRaw ImageSensorRaw;
 
 #define IMAGE_SENSOR_SCENE_CACHE 4
@@ -180,6 +181,9 @@ struct ImageSensorState {
     uint32_t drop_nth, drop_every, drop_reg, late_reg, late_frames;
     uint32_t skip_nth, skip_every;
     bool nack;                  /* a dropped write is NACKed, else lost */
+    const ImageSensorSoftReset *soft_reset;
+    uint32_t reset_busy_us;     /* NACK this long after a soft reset */
+    int64_t reset_busy_until;   /* in QEMU_CLOCK_VIRTUAL ns, 0: answering */
     /* what the knobs did */
     uint64_t n_latches, n_held, n_writes, n_dropped, n_nacked, n_late;
     uint64_t n_frames, n_skipped;
