@@ -5,7 +5,7 @@
  * eFuse word libimp reads the grade from (SUBSOCTYPE1 at 0x238 up to the
  * T32, the byte at 0x21F on the T33, SUBSOCTYPE2 at 0x250 on the T40 and
  * T41), with the codes the vendor libimps decode; and the APLL and MPLL as
- * the vendor U-Boot leaves them for that grade, which a -kernel boot starts
+ * thingino's U-Boot leaves them for that grade, which a -kernel boot starts
  * from (a 4 KiB uImage here). The T32LQ's are as one reads them.
  *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
@@ -45,8 +45,8 @@ typedef struct {
 
 static const GradeCase cases[] = {
     { "t21x", &t21, 0x22220000, 0x0470484d, 0x04a0484d },
-    { "t23dn", &t23, 0x55550000, 0x07d0590d, 0x07d0590d },
-    { "t23zx", &t23, 0x66660000, 0x07d0590d, 0x07d0590d },
+    { "t23dn", &t23, 0x55550000, 0x15e0d10d, 0x0640510d },
+    { "t23zx", &t23, 0x66660000, 0x15e0d10d, 0x0640510d },
     { "t32lq", &t32, 0x99991111, 0x04b0510d, 0x0640510d },
     { "t32nq", &t32, 0xaaaa2222, 0x0640510d, 0x04b0510d },
     { "t32zl", &t32, 0x55550000, 0x04b0510d, 0x0640510d },
@@ -59,22 +59,22 @@ static const GradeCase cases[] = {
     { "t32a", &t32, 0x44440000, 0x0640510d, 0x04b0510d },
     { "t32dl", &t32, 0x11110000, 0x04b0510d, 0x0640510d },
     { "t32lqh", &t32, 0x88880000, 0x04b0510d, 0x0640510d },
-    { "t33n", &t33, 0xaadd0000, 0x1db0e10d, 0x04b0510d },
-    { "t33l", &t33, 0x99dd0000, 0x1db0e10d, 0x1450990d },
-    { "t33dl", &t33, 0x11dd0000, 0x1db0e10d, 0x1450990d },
-    { "t33zl", &t33, 0x55dd0000, 0x1290a10d, 0x1130990d },
-    { "t33zn", &t33, 0x77dd0000, 0x1290a10d, 0x0af0590d },
-    { "t33vl", &t33, 0xccdd0000, 0x1290a10d, 0x1130990d },
-    { "t33vn", &t33, 0xdddd0000, 0x1290a10d, 0x0af0590d },
-    { "t33a", &t33, 0x44dd0000, 0x1db0e10d, 0x04b0510d },
-    { "t41n", &t41, 0x11110000, 0x05b008bd, 0x1760889d },
-    { "t41zn", &t41, 0x77772222, 0x05b008bd, 0x1760889d },
+    { "t33n", &t33, 0xaadd0000, 0x1db0e1cd, 0x04b051cd },
+    { "t33l", &t33, 0x99dd0000, 0x1db0e1cd, 0x145099cd },
+    { "t33dl", &t33, 0x11dd0000, 0x1db0e1cd, 0x145099cd },
+    { "t33zl", &t33, 0x55dd0000, 0x1290a1cd, 0x113099cd },
+    { "t33zn", &t33, 0x77dd0000, 0x1290a1cd, 0x0af099cd },
+    { "t33vl", &t33, 0xccdd0000, 0x1290a1cd, 0x113099cd },
+    { "t33vn", &t33, 0xdddd0000, 0x1290a1cd, 0x0af099cd },
+    { "t33a", &t33, 0x44dd0000, 0x1db0e1cd, 0x04b051cd },
+    { "t41n", &t41, 0x11110000, 0x05b008bd, 0x15d0889d },
+    { "t41zn", &t41, 0x77772222, 0x05b008bd, 0x15d0889d },
     { "t41lc", &t41, 0x88880000, 0x05b008bd, 0x063008bd },
     { "t41l", &t41, 0x33330000, 0x05b008bd, 0x063008bd },
     { "t41zl", &t41, 0x55551111, 0x05b008bd, 0x063008bd },
     { "t41zm", &t41, 0xbbbb4444, 0x05b008bd, 0x15d0889d },
-    { "t41zg", &t41, 0xcccc0000, 0x05b008bd, 0x07c0093d },
-    { "t41a", &t41, 0x44440000, 0x1440889d, 0x0c70881d },
+    { "t41zg", &t41, 0xcccc0000, 0x05b008bd, 0x15d0889d },
+    { "t41a", &t41, 0x44440000, 0x05b008bd, 0x15d0889d },
 };
 
 static char *make_uimage(void)
