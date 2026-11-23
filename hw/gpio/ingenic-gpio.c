@@ -115,6 +115,7 @@ struct IngenicGpioFamily {
     const uint32_t *pins;               /* the pins each port has */
     const IngenicGpioPadBits *bits;     /* ending in a reg of 0 */
     uint16_t absent;                    /* written by firmware, not there */
+    const uint32_t *pinread;            /* what PXPIN shows of each port */
 };
 
 static const IngenicGpioReset ingenic_gpio_reset_t10[] = {
@@ -179,6 +180,10 @@ static const IngenicGpioReset ingenic_gpio_reset_t30[] = {
 };
 static const uint32_t ingenic_gpio_pins_t30[] = {
     0x1fdfffff, 0xffffefff, 0x1ffffbff, 0x0fcff3fc
+};
+/* PXPIN read at the U-Boot prompt of a T30X: C and D show no absent pin */
+static const uint32_t ingenic_gpio_pinread_t30[] = {
+    UINT32_MAX, UINT32_MAX, 0x1ffffbff, 0x0fcff3fc
 };
 static const IngenicGpioPadBits ingenic_gpio_bits_t30[] = {
     { 0x100, PAD_RO }, { 0x110, PAD_LO }, { 0x120, PAD_HI },
@@ -257,7 +262,7 @@ static const IngenicGpioFamily ingenic_gpio_families[] = {
      */
     { "t30", { 0x100, 0x110, 0x120, 0x130, 0x140, 0x150, 0x160, 0x180 },
       ingenic_gpio_reset_t30, ingenic_gpio_pins_t30, ingenic_gpio_bits_t30,
-      0x060 },
+      0x060, ingenic_gpio_pinread_t30 },
     { "t31", { 0x100, 0x110, 0x120, 0x130, 0x140, 0x150, 0x160 },
       ingenic_gpio_reset_t31 },
     /*
@@ -546,7 +551,8 @@ static uint64_t ingenic_gpio_read(void *opaque, hwaddr offset,
     }
     switch (offset % s->port_stride) {
     case PXPIN:
-        return gpio_level(p);
+        return gpio_level(p) &
+               (s->fam->pinread ? s->fam->pinread[n] : UINT32_MAX);
     case PXINT: case PXINTS: case PXINTC:
         return p->intr;
     case PXMSK: case PXMSKS: case PXMSKC:

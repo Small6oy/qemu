@@ -92,6 +92,8 @@ static void test_pads(void)
     qtest_writel(qts, GPIO + 0x114, 0x1);
     g_assert_cmphex(qtest_readl(qts, GPIO + 0x110), ==, 0x05400001);
     g_assert_cmphex(qtest_readl(qts, GPIO + 0x140), ==, 0x02aaa2aa);
+    /* PD's PXPIN as a T30X's U-Boot prompt reads it: only its pins, high */
+    g_assert_cmphex(qtest_readl(qts, GPIO + 0x3000), ==, 0x0fcff3fc);
     qtest_writel(qts, GPIO + 0x3110, 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, GPIO + 0x3110), ==, 0xff0ffff0);
     qtest_writel(qts, GPIO + 0x3124, 0xffffffff);
@@ -119,6 +121,11 @@ static void test_pads(void)
                      "-global ingenic-t31.soc-variant=t21n");
     qtest_writel(qts, GPIO + 0x64, 0x19800000);
     g_assert_cmphex(qtest_readl(qts, GPIO + 0x60), ==, 0);
+    /* three ports: a T21N reads 0 over the fourth's registers */
+    for (unsigned off = 0; off < 0x200; off += 4) {
+        qtest_writel(qts, GPIO + 0x3000 + off, 0xffffffff);
+        g_assert_cmphex(qtest_readl(qts, GPIO + 0x3000 + off), ==, 0);
+    }
     qtest_quit(qts);
 
     /* a T32LQ reads 0 at 0x170 and drops the writes to it, set and clear */
