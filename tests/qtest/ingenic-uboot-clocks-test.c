@@ -253,6 +253,45 @@ static void test_xb2(const void *data)
     unlink(kernel);
 }
 
+/* What a mainline kernel's clock reads show on silicon, per part */
+static void test_silicon_reads(void)
+{
+    static const struct {
+        const char *machine, *variant;
+        uint32_t soc_id, vpll_hz_mhz;
+    } p[] = {
+        { "ingenic-t10", "t10l", 0x10005003, 0 },
+        { "ingenic-t21", "t21n", 0x10021003, 1200 },
+        { "ingenic-t23", "t23n", 0x10023003, 0 },
+        { "ingenic-t30", "t30x", 0x10030005, 1200 },
+    };
+
+    for (int i = 0; i < ARRAY_SIZE(p); i++) {
+        g_autofree char *kernel = make_uimage();
+        QTestState *qts = qtest_initf("-machine %s "
+                                      "-global ingenic-t31.soc-variant=%s "
+                                      "-kernel %s", p[i].machine,
+                                      p[i].variant, kernel);
+
+        g_assert_cmphex(qtest_readl(qts, 0x1300002c), ==, p[i].soc_id);
+        if (p[i].vpll_hz_mhz) {
+            /* On: U-Boot starts the VPLL; the DFU loader's reads 0x03100860 */
+            g_assert_cmpuint(pll2_mhz(qtest_readl(qts, CPM + CPVPCR), true),
+                             ==, p[i].vpll_hz_mhz);
+        }
+        /* The T23 has no divider at 0x60 */
+        if (!strcmp(p[i].variant, "t23n")) {
+            g_assert_cmphex(qtest_readl(qts, CPM + 0x60), ==, 0);
+        }
+        /* The T30's EPLL is off, as the DFU loader's read shows */
+        if (!strcmp(p[i].variant, "t30x")) {
+            g_assert_cmphex(qtest_readl(qts, CPM + 0x58), ==, 0x06305040);
+        }
+        qtest_quit(qts);
+        unlink(kernel);
+    }
+}
+
 /* A flash boot leaves the CPCCR to the firmware, as the bootrom has it */
 static void test_flash(void)
 {
@@ -302,6 +341,7 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(name, &cases2[i], test_xb2);
     }
+    qtest_add_func("ingenic-uboot-clocks/silicon-reads", test_silicon_reads);
     qtest_add_func("ingenic-uboot-clocks/flash-boot", test_flash);
     qtest_add_func("ingenic-uboot-clocks/t31x-rates", test_t31x_rates);
     return g_test_run();
