@@ -1355,8 +1355,10 @@ static const struct {
      * its OTG clock on
      */
     { "ingenic-t32-otg-rest",  0x13511000, 188 * KiB,  FAM_T32 | FAM_T33 },
-    /* The T10L's, with CLKGR0 bit 16 clear too */
-    { "ingenic-t10-uart2",     0x10032000, 4 * KiB,    FAM_T10 },
+    /* The T10L's, with CLKGR0 bit 16 clear too; a T30X's the same */
+    { "ingenic-t10-uart2",     0x10032000, 4 * KiB,    FAM_T10 | FAM_T30 },
+    /* A T30X reads 0 with every CLKGR1 gate open (it has no DTRNG gate) */
+    { "ingenic-t30-dtrng",     0x10072000, 4 * KiB,    FAM_T30 },
     /*
      * The LCD controller of the T20, T21, T23 and T31 is a real device; a
      * T30X's is another, a smaller DPU, a register window of its own, and a
@@ -1899,12 +1901,17 @@ static void ingenic_t31_realize(DeviceState *dev, Error **errp)
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->rtc), 0,
                        qdev_get_gpio_in(DEVICE(&s->intc), 32));
 
-    /* DTRNG at 0x10072000, IRQ -> INTC source 34 */
+    /*
+     * DTRNG at 0x10072000, IRQ -> INTC source 34; the T30 has none, so its
+     * model stays off the bus
+     */
     sysbus_realize(SYS_BUS_DEVICE(&s->dtrng), &error_fatal);
-    sysbus_mmio_map(SYS_BUS_DEVICE(&s->dtrng), 0,
-                    s->memmap[INGENIC_T31_DEV_DTRNG]);
-    sysbus_connect_irq(SYS_BUS_DEVICE(&s->dtrng), 0,
-                       qdev_get_gpio_in(DEVICE(&s->intc), 34));
+    if (!(ingenic_t31_family_bit(s->harb0_cpuid) & FAM_T30)) {
+        sysbus_mmio_map(SYS_BUS_DEVICE(&s->dtrng), 0,
+                        s->memmap[INGENIC_T31_DEV_DTRNG]);
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->dtrng), 0,
+                           qdev_get_gpio_in(DEVICE(&s->intc), 34));
+    }
 
     /*
      * The RISC-V core: the T31's and T32's SRAM and control pages, the
@@ -2215,8 +2222,9 @@ static void ingenic_t31_realize(DeviceState *dev, Error **errp)
      */
     {
         static const int uart_irq[INGENIC_T31_CPM_UARTS] = { 51, 50, 49 };
-        /* The T10 has two */
-        int uarts = extract32(s->harb0_cpuid, 12, 16) == 0x0005
+        /* The T10 and T30 have two */
+        int uarts = extract32(s->harb0_cpuid, 12, 16) == 0x0005 ||
+                    extract32(s->harb0_cpuid, 12, 16) == 0x0030
                     ? 2 : INGENIC_T31_CPM_UARTS;
 
         for (int n = 0; n < uarts; n++) {

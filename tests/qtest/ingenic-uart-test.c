@@ -121,7 +121,7 @@ static const Part parts[] = {
     { "ingenic-t20", CPM_CLKGR0, 14, 3 },
     { "ingenic-t21", CPM_CLKGR0, 14, 3 },
     { "ingenic-t23", CPM_CLKGR0, 14, 3 },
-    { "ingenic-t30", CPM_CLKGR0, 14, 3 },
+    { "ingenic-t30", CPM_CLKGR0, 14, 2 },
     { "ingenic-t31", CPM_CLKGR0, 14, 3 },
     { "ingenic-t32", CPM_CLKGR0, 11, 3 },
     { "ingenic-t33", CPM_CLKGR0, 11, 3 },
@@ -1018,9 +1018,10 @@ static void test_r34_line_dr(const void *data)
     qtest_quit(u.qts);
 }
 
-static void test_t10_no_uart2(void)
+/* A T10L and a T30X read 0 at UART2 with every clock gate open */
+static void test_no_uart2(const void *machine)
 {
-    QTestState *qts = qtest_init("-machine ingenic-t10");
+    QTestState *qts = qtest_initf("-machine %s", (const char *)machine);
 
     qtest_writel(qts, CPM_CLKGR0, 0);
     qtest_writel(qts, UART2 + SPR, 0x5a);
@@ -1125,7 +1126,10 @@ int main(int argc, char **argv)
     }
     qtest_add_func("ingenic-uart/t32-rom-gates", test_t32_rom_gates);
     qtest_add_func("ingenic-uart/t32-no-uart3", test_t32_no_uart3);
-    qtest_add_func("ingenic-uart/t10-no-uart2", test_t10_no_uart2);
+    qtest_add_data_func("ingenic-uart/t10-no-uart2", "ingenic-t10",
+                        test_no_uart2);
+    qtest_add_data_func("ingenic-uart/t30-no-uart2", "ingenic-t30",
+                        test_no_uart2);
     for (int i = 0; i < ARRAY_SIZE(dma_cases); i++) {
         g_autofree char *path = g_strdup_printf("ingenic-uart/dma/%s",
                                                 dma_cases[i].machine);

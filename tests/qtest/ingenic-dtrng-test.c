@@ -1,13 +1,13 @@
 /*
  * QTest testcase for the Ingenic DTRNG
  *
- * The protocol of the jz-dtrng driver, on all eleven machines: the
- * register as every part resets it, status ready only while generation is
- * on, the CPU mode (divider, interrupt masked, enable, poll status bit 0,
- * read RANDOMNUM), RDY_CLR as a pulse that does not latch, and the
- * driver's IRQ mode, which waits for an interrupt on INTC source 34. The
- * numbers are random: the test reads a run of them and requires only that
- * they are not all one value.
+ * The protocol of the jz-dtrng driver, on every machine but the T30
+ * (which has none): the register as every part resets it, status ready
+ * only while generation is on, the CPU mode (divider, interrupt masked,
+ * enable, poll status bit 0, read RANDOMNUM), RDY_CLR as a pulse that does
+ * not latch, and the driver's IRQ mode, which waits for an interrupt on
+ * INTC source 34. The numbers are random: the test reads a run of them and
+ * requires only that they are not all one value.
  *
  * Copyright (C) 2026 Alfonso Gamboa <gtxent@gmail.com>
  *
@@ -40,7 +40,6 @@ static const struct {
     { "t20", "ingenic-t20" },
     { "t21", "ingenic-t21" },
     { "t23", "ingenic-t23" },
-    { "t30", "ingenic-t30" },
     { "t31", "ingenic-t31" },
     { "t32", "ingenic-t32" },
     { "t33", "ingenic-t33" },
@@ -123,6 +122,19 @@ static void test_irq_mode(const void *data)
     qtest_quit(qts);
 }
 
+/* A T30X reads 0 at 0x10072000 with every CLKGR1 gate open */
+static void test_t30_absent(void)
+{
+    QTestState *qts = qtest_init("-machine ingenic-t30");
+
+    qtest_writel(qts, 0x100000e0, 0);
+    wr(qts, CFG, CFG_EN | CFG_MASK);
+    for (unsigned off = 0; off < 0x80; off += 4) {
+        g_assert_cmphex(rd(qts, off), ==, 0);
+    }
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -135,5 +147,6 @@ int main(int argc, char **argv)
         path = g_strdup_printf("/ingenic-dtrng/%s/irq-mode", parts[i].part);
         qtest_add_data_func(path, parts[i].machine, test_irq_mode);
     }
+    qtest_add_func("/ingenic-dtrng/t30/absent", test_t30_absent);
     return g_test_run();
 }
