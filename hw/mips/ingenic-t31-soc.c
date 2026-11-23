@@ -502,6 +502,14 @@ static const T31UbootClocks *ingenic_t31_uboot_clocks(const T31Variant *v)
     return NULL;
 }
 
+/* The T21's Ethernet PHY is inside the SoC; the others' is on the board */
+static bool ingenic_t31_has_ephy(IngenicT31State *s)
+{
+    const T31Variant *v = (const T31Variant *)s->variant;
+
+    return v && extract32(v->cpuid, 12, 16) == 0x0021;
+}
+
 /*
  * The CPM registers that read differently per family, as a T10L, T20X, T21N,
  * T23N, T30X, T31X and T32LQ read them out of reset: the I2S dividers (up to
@@ -812,6 +820,7 @@ Clock *ingenic_t31_cpu_clock(IngenicT31State *s)
         qdev_prop_set_uint8(cpm, "lcd-gate", 24);
         break;
     }
+    qdev_prop_set_bit(cpm, "ephy", extract32(v->cpuid, 12, 16) == 0x0021);
     /* A T31X's HASH engine reads 0x00108001 with CLKGR0 bit 18 set */
     if (extract32(v->cpuid, 12, 16) == 0x0031) {
         qdev_prop_set_uint8(cpm, "hash-gate", 18);
@@ -1680,9 +1689,15 @@ static void ingenic_t31_realize(DeviceState *dev, Error **errp)
             qdev_prop_set_netdev(DEVICE(&s->gmac), "netdev", nc);
         }
     }
+    qdev_prop_set_bit(DEVICE(&s->gmac), "ephy", ingenic_t31_has_ephy(s));
     sysbus_realize(SYS_BUS_DEVICE(&s->gmac), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->gmac), 0,
                     s->memmap[INGENIC_T31_DEV_GMAC]);
+    if (ingenic_t31_has_ephy(s)) {
+        qdev_connect_gpio_out_named(DEVICE(&s->cpm), "ephy-up", 0,
+                                    qdev_get_gpio_in_named(DEVICE(&s->gmac),
+                                                           "ephy-up", 0));
+    }
     /* GMAC IRQ -> INTC source 55 (bank 1 bit 23) */
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->gmac), 0,
                        qdev_get_gpio_in(DEVICE(&s->intc), 55));

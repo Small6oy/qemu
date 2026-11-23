@@ -44,6 +44,7 @@
 #define CPM_USBRDT      0x40
 #define CPM_USBVBFIL    0x44
 #define CPM_USBPCR1     0x48
+#define CPM_EPHYSEED    0x50    /* T21: the ePHY's power word */
 #define CPM_MACCDR      0x54
 #define CPM_CPEPCR      0x58    /* T30: the EPLL; the T32's SFC0CDR */
 #define CPM_PWMCDR      0x5C    /* T32, T33: the PWM block clock */
@@ -90,6 +91,19 @@
  * its MAC_CONFIG.FES (10M at reset), as a T21N, T31X and T41NQ read it
  */
 #define MACPHYC_RO      0xff000000
+
+/*
+ * The T21's internal PHY, as U-Boot's and the mainline driver's sequences
+ * set it (measured on a T21N: MACPHYC 0x60e00000 and EPHYSEED 0xc8007016
+ * after it): MII selected in bits 2:0, bits 23:22 enabling the PHY, bit 3
+ * its reset. Bit 24 reports the reset: it flips as a reset ends, which is
+ * how the driver tells that one ran.
+ */
+#define MACPHYC_PHYINTF     0x7
+#define MACPHYC_EPHY_RST    (1 << 3)
+#define MACPHYC_EPHY_EN     (3u << 22)
+#define MACPHYC_EPHY_RSTSTAT (1u << 24)
+#define EPHYSEED_VALUE      0xc8007016
 
 /* SSICDR's change enable and busy sit a bit lower than the other dividers' */
 #define SSICDR_BUSY     (1u << 27)
@@ -454,6 +468,20 @@ static void ingenic_t31_cpm_uart_clocks(IngenicT31CpmState *s, uint32_t gr)
     }
 }
 
+static void ingenic_t31_cpm_ephy_update(IngenicT31CpmState *s)
+{
+    uint32_t phyc = s->regs[REG_INDEX(CPM_GMACPHYC)];
+
+    if (!s->ephy) {
+        return;
+    }
+    qemu_set_irq(s->ephy_up,
+                 !(phyc & MACPHYC_PHYINTF) &&
+                 (phyc & MACPHYC_EPHY_EN) == MACPHYC_EPHY_EN &&
+                 !(phyc & MACPHYC_EPHY_RST) &&
+                 s->regs[REG_INDEX(CPM_EPHYSEED)] == EPHYSEED_VALUE);
+}
+
 static void ingenic_t31_cpm_write(void *opaque, hwaddr offset,
                                   uint64_t value, unsigned size)
 {
@@ -598,9 +626,18 @@ static void ingenic_t31_cpm_write(void *opaque, hwaddr offset,
         }
         break;
 
-    case CPM_GMACPHYC:
-        s->regs[idx] = (s->regs[idx] & MACPHYC_RO) | (value & ~MACPHYC_RO);
+    case CPM_GMACPHYC: {
+        uint32_t old = s->regs[idx];
+
+        s->regs[idx] = (old & MACPHYC_RO) | (value & ~MACPHYC_RO);
+        if (s->ephy && (old & MACPHYC_EPHY_RST) &&
+            !(value & MACPHYC_EPHY_RST) &&
+            (value & MACPHYC_EPHY_EN) == MACPHYC_EPHY_EN) {
+            s->regs[idx] ^= MACPHYC_EPHY_RSTSTAT;
+        }
+        ingenic_t31_cpm_ephy_update(s);
         break;
+    }
 
     case CPM_SRBC:
         s->regs[idx] = value & ~(SRBC_ACKS | s->srbc_held);
@@ -628,6 +665,9 @@ static void ingenic_t31_cpm_write(void *opaque, hwaddr offset,
         /* fall through */
     default:
         s->regs[idx] = value & ingenic_t31_cpm_wmask(s, offset);
+        if (offset == CPM_EPHYSEED) {
+            ingenic_t31_cpm_ephy_update(s);
+        }
         if (offset == CPM_I2SCDR_T21 &&
             s->i2s_cdr == INGENIC_T31_I2S_CDR_ONE) {
             ingenic_t31_cpm_update_cpu_clk(s, true);
@@ -756,6 +796,7 @@ static void ingenic_t31_cpm_reset_exit(Object *obj, ResetType type)
     ingenic_t31_cpm_hash_clock(s, s->clkgr0_reset);
     ingenic_t31_cpm_update_stops(s);
     qemu_set_irq(s->otg_ram, s->regs[REG_INDEX(CPM_USBPCR)] & 1);
+    ingenic_t31_cpm_ephy_update(s);
 }
 
 static void ingenic_t31_cpm_mac_speed(void *opaque, int n, int level)
@@ -812,6 +853,7 @@ static void ingenic_t31_cpm_init(Object *obj)
     qdev_init_gpio_out_named(DEVICE(s), &s->ivdc_gate, "ivdc-gate", 1);
     qdev_init_gpio_out_named(DEVICE(s), s->uart_clock, "uart-clock",
                              INGENIC_T31_CPM_UARTS);
+    qdev_init_gpio_out_named(DEVICE(s), &s->ephy_up, "ephy-up", 1);
     qdev_init_gpio_in_named(DEVICE(s), ingenic_t31_cpm_mac_speed,
                             "mac-speed", 1);
     s->cpu_clk = qdev_init_clock_out(DEVICE(s), "cpu-clk");
@@ -847,6 +889,7 @@ static const Property ingenic_t31_cpm_properties[] = {
                       INGENIC_PLL_MNOD),
     DEFINE_PROP_BOOL("srbc1", IngenicT31CpmState, srbc1, false),
     DEFINE_PROP_BOOL("epll", IngenicT31CpmState, epll, false),
+    DEFINE_PROP_BOOL("ephy", IngenicT31CpmState, ephy, false),
     DEFINE_PROP_UINT8("riscv-gate", IngenicT31CpmState, riscv_gate, 26),
     DEFINE_PROP_UINT8("isp-gate", IngenicT31CpmState, isp_gate, 23),
     DEFINE_PROP_UINT8("hash-gate", IngenicT31CpmState, hash_gate,

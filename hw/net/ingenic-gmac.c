@@ -251,6 +251,40 @@ static void gmac_raise(IngenicGmacState *s, uint32_t bits)
 }
 
 /*
+ * With the SoC's own PHY (the T21's) the link, and so RX, exists only once
+ * the CPM has the PHY selected, powered and out of reset, and PHY register
+ * 0x18 bit 1 is set, as U-Boot's sequence leaves it
+ */
+#define EPHY_PWR_REG        0x18
+#define EPHY_PWR_UP         (1 << 1)
+
+static bool gmac_phy_ready(IngenicGmacState *s)
+{
+    return !s->ephy ||
+           (s->ephy_up && (s->phy_regs[EPHY_PWR_REG] & EPHY_PWR_UP));
+}
+
+static void gmac_update_link(IngenicGmacState *s)
+{
+    bool up = s->nic && !qemu_get_queue(s->nic)->link_down &&
+              gmac_phy_ready(s);
+
+    if (up) {
+        s->phy_regs[MII_BMSR] |= MII_BMSR_LINK_ST | MII_BMSR_AN_COMP;
+    } else {
+        s->phy_regs[MII_BMSR] &= ~(MII_BMSR_LINK_ST | MII_BMSR_AN_COMP);
+    }
+}
+
+static void gmac_ephy_up(void *opaque, int n, int level)
+{
+    IngenicGmacState *s = opaque;
+
+    s->ephy_up = level;
+    gmac_update_link(s);
+}
+
+/*
  * RIWT: a frame stored with RDES1.DIC set raises no RI itself; RIWT x 256
  * clocks of the bus clock after it, RI is raised for it. Any RI raised
  * meanwhile covers it. The unit is the databook's, the clock is the AHB's
@@ -319,6 +353,9 @@ static void ingenic_gmac_mdio_write(IngenicGmacState *s)
             val &= ~(MII_BMCR_RESET | MII_BMCR_ANRESTART);
         }
         s->phy_regs[reg] = val;
+        if (reg == EPHY_PWR_REG && s->nic) {
+            gmac_update_link(s);
+        }
     }
     s->mac_regs[MAC_IDX(MAC_MII_ADDR)] &= ~MII_ADDR_BUSY;
 }
@@ -646,18 +683,12 @@ static bool ingenic_gmac_can_receive(NetClientState *nc)
 
 static void ingenic_gmac_set_link_status(NetClientState *nc)
 {
-    IngenicGmacState *s = qemu_get_nic_opaque(nc);
-
     /*
      * Mirror the backend link state into the PHY status register.
      * The guest drivers use phylib polling (no PHY interrupt line),
      * so flipping BMSR is all carrier propagation takes.
      */
-    if (nc->link_down) {
-        s->phy_regs[MII_BMSR] &= ~(MII_BMSR_LINK_ST | MII_BMSR_AN_COMP);
-    } else {
-        s->phy_regs[MII_BMSR] |= MII_BMSR_LINK_ST | MII_BMSR_AN_COMP;
-    }
+    gmac_update_link(qemu_get_nic_opaque(nc));
 }
 
 static bool gmac_addr_match(uint32_t hi, uint32_t lo, const uint8_t *a)
@@ -945,6 +976,10 @@ static ssize_t ingenic_gmac_receive(NetClientState *nc,
     size_t plen = MAX(len, ETH_MIN_NOFCS);
     uint8_t *f;
 
+    if (!gmac_phy_ready(s)) {
+        return len;
+    }
+
     /*
      * The wire carries the padding and the FCS the backend left out. A
      * frame the ring has no room for is dropped, flagged as RU, as the MAC
@@ -1229,6 +1264,7 @@ static void ingenic_gmac_reset_hold(Object *obj, ResetType type)
     gmac_mac_reset(s);
     gmac_dma_reset(s);
     ingenic_gmac_phy_reset(s);
+    gmac_update_link(s);
 }
 
 static void ingenic_gmac_realize(DeviceState *dev, Error **errp)
@@ -1258,6 +1294,7 @@ static void ingenic_gmac_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
     qdev_init_gpio_out_named(DEVICE(obj), &s->speed_100, "speed-100", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), gmac_ephy_up, "ephy-up", 1);
 }
 
 static int ingenic_gmac_post_load(void *opaque, int version_id)
@@ -1265,7 +1302,7 @@ static int ingenic_gmac_post_load(void *opaque, int version_id)
     IngenicGmacState *s = opaque;
 
     if (s->nic) {
-        ingenic_gmac_set_link_status(qemu_get_queue(s->nic));
+        gmac_update_link(s);
     }
     return 0;
 }
@@ -1285,6 +1322,7 @@ static const VMStateDescription vmstate_ingenic_gmac = {
         VMSTATE_BOOL_V(rx_suspended, IngenicGmacState, 2),
         VMSTATE_BOOL_V(tx_stopped, IngenicGmacState, 2),
         VMSTATE_TIMER_PTR_V(rx_wd, IngenicGmacState, 3),
+        VMSTATE_BOOL_V(ephy_up, IngenicGmacState, 3),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -1293,12 +1331,14 @@ static const VMStateDescription vmstate_ingenic_gmac = {
  * "phy" off for a board with no PHY on the MDIO bus, which reads all ones,
  * or with "mdio-hold" the bus as a T23DL's, with no pull-up: a read nothing
  * answers returns the register number's low bit sixteen times, so that a
- * U-Boot takes ID 0x0000ffff at address 0 for a PHY
+ * U-Boot takes ID 0x0000ffff at address 0 for a PHY; "ephy" for the T21's
+ * internal PHY, which its CPM's "ephy-up" line brings up
  */
 static const Property ingenic_gmac_props[] = {
     DEFINE_NIC_PROPERTIES(IngenicGmacState, conf),
     DEFINE_PROP_BOOL("phy", IngenicGmacState, has_phy, true),
     DEFINE_PROP_BOOL("mdio-hold", IngenicGmacState, mdio_hold, false),
+    DEFINE_PROP_BOOL("ephy", IngenicGmacState, ephy, false),
     DEFINE_PROP_UINT32("hw-feature", IngenicGmacState, hw_feature,
                        0x090d0935),
 };

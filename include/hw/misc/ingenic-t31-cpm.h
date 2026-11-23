@@ -49,6 +49,7 @@ struct IngenicT31CpmState {
     qemu_irq cim_clock;         /* the sensor's MCLK: CIMCDR not stopped */
     qemu_irq ivdc_clock;        /* the T23's IVDC: VPUCDR not stopped */
     qemu_irq ivdc_gate;         /* CLKGR1's ivdc-gate bit clear */
+    qemu_irq ephy_up;           /* the T21's ePHY: selected, on, not reset */
     qemu_irq uart_clock[INGENIC_T31_CPM_UARTS];
     /* The CPU clock, from CPCCR and the PLLs */
     Clock *cpu_clk;
@@ -75,6 +76,7 @@ struct IngenicT31CpmState {
     uint8_t mpll_format;        /* the MPLL's, where it differs */
     bool srbc1;                 /* the T30's second SRBC */
     bool epll;                  /* the T30's EPLL at 0x58 */
+    bool ephy;                  /* the T21's internal Ethernet PHY */
     uint8_t riscv_gate;         /* the CLKGR0 bit that gates the core */
     uint8_t isp_gate;           /* the CLKGR0 bit that gates the ISP */
     uint8_t hash_gate;          /* the CLKGR0 bit that gates the HASH engine */

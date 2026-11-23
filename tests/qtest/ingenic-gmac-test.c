@@ -1162,6 +1162,79 @@ static void test_nic_id(void)
     qtest_quit(qts);
 }
 
+/*
+ * The T21's internal PHY: no link and no frames until MACPHYC selects MII
+ * and enables the PHY, the power word is set, the reset has run and PHY
+ * register 0x18 bit 1 is set, in the order U-Boot and the mainline driver
+ * do it. The sequence and the values are the T21N's, measured; the PHY
+ * refusing frames before it is the model of "RX is dead" they report.
+ */
+#define CPM_MACPHYC     0x100000e8
+#define CPM_EPHYSEED    0x10000050
+#define PHYC_RST        (1 << 3)
+#define PHYC_RSTSTAT    (1 << 24)
+
+static void mdio_write(QTestState *qts, unsigned reg, uint16_t v)
+{
+    qtest_writel(qts, GMAC + MII_DATA, v);
+    qtest_writel(qts, GMAC + MII_ADDR, reg << 6 | MII_WRITE | MII_BUSY);
+}
+
+static void ephy_pulse(QTestState *qts)
+{
+    uint32_t v = qtest_readl(qts, CPM_MACPHYC);
+
+    qtest_writel(qts, CPM_MACPHYC, v | PHYC_RST);
+    qtest_writel(qts, CPM_MACPHYC, v & ~PHYC_RST);
+}
+
+static void test_ephy(void)
+{
+    struct sockaddr_in me;
+    int qp, sk = wire_open(&me, &qp);
+    QTestState *qts = qtest_initf("-machine ingenic-t21 -nic socket,"
+                                  "udp=127.0.0.1:%d,localaddr=127.0.0.1:%d",
+                                  ntohs(me.sin_port), qp);
+    Setup su = { .rx_n = 2, .rx_size = 2048 };
+    struct sockaddr_in to = me;
+    uint32_t v;
+
+    to.sin_port = htons(qp);
+    gmac_prepare(qts, &su);
+    qtest_writel(qts, GMAC + MAC_CONFIG,
+                 qtest_readl(qts, GMAC + MAC_CONFIG) & ~CFG_LM);
+
+    /* out of reset: MII, PHY enabled, nothing else done */
+    g_assert_cmphex(qtest_readl(qts, CPM_MACPHYC) & 0x00ffffff, ==, 0xc00000);
+    g_assert_cmphex(mdio_read(qts, 1) & 4, ==, 0);
+    g_assert_false(wire_rx(qts, sk, &to));
+
+    qtest_writel(qts, CPM_MACPHYC, qtest_readl(qts, CPM_MACPHYC) | 1 << 21);
+    qtest_writel(qts, CPM_EPHYSEED, 0xc8007016);
+    ephy_pulse(qts);
+    v = qtest_readl(qts, CPM_MACPHYC);
+    g_assert_cmphex(v & PHYC_RSTSTAT, ==, PHYC_RSTSTAT);
+    g_assert_false(wire_rx(qts, sk, &to));      /* register 0x18 not set */
+
+    mdio_write(qts, 0x18, mdio_read(qts, 0x18) | 2);
+    g_assert_cmphex(mdio_read(qts, 1) & 4, ==, 4);
+
+    /* RMII is not what the PHY talks */
+    qtest_writel(qts, CPM_MACPHYC, qtest_readl(qts, CPM_MACPHYC) | 4);
+    g_assert_cmphex(mdio_read(qts, 1) & 4, ==, 0);
+    g_assert_false(wire_rx(qts, sk, &to));
+    qtest_writel(qts, CPM_MACPHYC, qtest_readl(qts, CPM_MACPHYC) & ~7);
+
+    /* a second reset flips the status back, as the driver sees it */
+    ephy_pulse(qts);
+    g_assert_cmphex(qtest_readl(qts, CPM_MACPHYC) & PHYC_RSTSTAT, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, CPM_MACPHYC) & 0x00ffffff, ==, 0xe00000);
+
+    g_assert_true(wire_rx(qts, sk, &to));
+    close(sk);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1185,5 +1258,6 @@ int main(int argc, char **argv)
     qtest_add_func("ingenic-gmac/wire", test_wire);
     qtest_add_func("ingenic-gmac/riwt", test_riwt);
     qtest_add_func("ingenic-gmac/nic-id", test_nic_id);
+    qtest_add_func("ingenic-gmac/ephy", test_ephy);
     return g_test_run();
 }

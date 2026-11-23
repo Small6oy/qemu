@@ -37,6 +37,8 @@ struct IngenicGmacState {
     bool rx_suspended;          /* RU: the DMA waits for a poll demand */
     bool tx_stopped;            /* jabber timeout: ST must be cycled */
     QEMUTimer *rx_wd;           /* RIWT: RI for frames received with DIC */
+    bool ephy;                  /* the PHY is the SoC's, gated by its CPM */
+    bool ephy_up;               /* the CPM's "ephy-up" line */
 
     uint32_t mac_regs[INGENIC_GMAC_MAC_REGS];
     uint32_t dma_regs[INGENIC_GMAC_DMA_REGS];
