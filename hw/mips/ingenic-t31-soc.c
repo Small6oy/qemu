@@ -408,9 +408,15 @@ static const T31UbootClocks t31_uboot_clocks[] = {
       0xa0000017, 0x20000011, 0xe0000017 },     /* T10N */
     { NULL, 0x03b08909, 0x07d0c909, 0x9a794410, 0xa0000001,
       0x60000013, 0x2000000e, 0xa000000e },     /* T20L */
-    /* The T20X's MPLL is 1000 MHz as the T20N's, not the 1200 of its table */
-    { "t20n t20x", 0x04708909, 0x07d0c909, 0x9a794410, 0xa0000001,
+    { "t20n", 0x04708909, 0x07d0c909, 0x9a794410, 0xa0000001,
       0x60000013, 0x20000011, 0xa0000011 },
+    /*
+     * The T20X as the stock thingino U-Boot leaves it, read on a Wyze Cam
+     * v2: its MPLL 1000 MHz (not the 1200 of its old table), MSC0 from the
+     * MPLL, SSI from the MPLL too; the MAC's is the 2013.07 build's
+     */
+    { "t20x", 0x04708909, 0x07d0c909, 0x9a794410, 0xa0000001,
+      0x60000013, 0x80000014, 0xa0000013 },
     { NULL, 0x04704849, 0x04a04849, 0x9a773310, 0xa0000001,
       0x60000023, 0x20000007, 0x50000010 },     /* T21N */
     /* The T23's MAC clock is left parked unless U-Boot brings the MAC up */
