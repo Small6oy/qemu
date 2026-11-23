@@ -403,6 +403,15 @@ static void test_words(QTestState *qts, const EfuseCase *c)
         check("word", i, efuse_read(qts, i << CTRL_ADDR_SHIFT),
               i < c->nwords ? c->window[i] : 0);
     }
+    /*
+     * A word-indexed read ignores the length field and bit 31 (a T21N,
+     * T23N and T23DL read word 4 whole with them set)
+     */
+    for (unsigned ln = 1; ln < 8; ln++) {
+        check("length", ln,
+              efuse_read(qts, CTRL_BIT31 | 4 << CTRL_ADDR_SHIFT | ln << 16),
+              c->window[4]);
+    }
     /* The index wraps, so the first one past the field reads word 0 */
     if (c->addr_bits < 7) {
         check("word", n, efuse_read(qts, n << CTRL_ADDR_SHIFT), c->window[0]);
