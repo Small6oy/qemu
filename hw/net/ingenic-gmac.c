@@ -250,6 +250,30 @@ static void gmac_raise(IngenicGmacState *s, uint32_t bits)
     gmac_update_irq(s);
 }
 
+/*
+ * RIWT: a frame stored with RDES1.DIC set raises no RI itself; RIWT x 256
+ * clocks of the bus clock after it, RI is raised for it. Any RI raised
+ * meanwhile covers it. The unit is the databook's, the clock is the AHB's
+ * (225 MHz on the T21 and T31 as the CPM reads), and a zero RIWT is taken as
+ * no delay: neither is measured.
+ */
+#define GMAC_CSR_NS_X256    (256 * 1000 / 225)
+
+static void gmac_rx_wd_expire(void *opaque)
+{
+    gmac_raise(opaque, DMA_STATUS_RI);
+}
+
+static void gmac_rx_wd_arm(IngenicGmacState *s)
+{
+    uint32_t riwt = s->dma_regs[DMA_IDX(DMA_RIWT)] & 0xff;
+
+    if (!timer_pending(s->rx_wd)) {
+        timer_mod(s->rx_wd, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                            (int64_t)riwt * GMAC_CSR_NS_X256);
+    }
+}
+
 static uint32_t gmac_desc_stride(IngenicGmacState *s)
 {
     uint32_t bm = s->dma_regs[DMA_IDX(DMA_BUS_MODE)];
@@ -802,7 +826,10 @@ static void gmac_rx_store(IngenicGmacState *s, const uint8_t *data,
             }
             gmac_desc_write_word(s, addr, 0, st);
             if (!(des[1] & RDES1_DIC)) {
+                timer_del(s->rx_wd);
                 gmac_raise(s, DMA_STATUS_RI);
+            } else {
+                gmac_rx_wd_arm(s);
             }
             if (trunc || nd > 1) {
                 gmac_desc_read(s, next, nd_des);
@@ -1035,6 +1062,7 @@ static void gmac_dma_reset(IngenicGmacState *s)
     s->rx_suspended = false;
     s->tx_stopped = false;
     s->tx_len = 0;
+    timer_del(s->rx_wd);
     gmac_update_irq(s);
 }
 
@@ -1217,6 +1245,7 @@ static void ingenic_gmac_realize(DeviceState *dev, Error **errp)
 
     s->nic = qemu_new_nic(&net_info, &s->conf, TYPE_INGENIC_GMAC,
                            dev->id, &dev->mem_reentrancy_guard, s);
+    s->rx_wd = timer_new_ns(QEMU_CLOCK_VIRTUAL, gmac_rx_wd_expire, s);
 }
 
 static void ingenic_gmac_init(Object *obj)
@@ -1243,7 +1272,7 @@ static int ingenic_gmac_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_ingenic_gmac = {
     .name = TYPE_INGENIC_GMAC,
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
     .post_load = ingenic_gmac_post_load,
     .fields = (const VMStateField[]) {
@@ -1255,6 +1284,7 @@ static const VMStateDescription vmstate_ingenic_gmac = {
                              INGENIC_GMAC_PHY_REGS),
         VMSTATE_BOOL_V(rx_suspended, IngenicGmacState, 2),
         VMSTATE_BOOL_V(tx_stopped, IngenicGmacState, 2),
+        VMSTATE_TIMER_PTR_V(rx_wd, IngenicGmacState, 3),
         VMSTATE_END_OF_LIST()
     }
 };

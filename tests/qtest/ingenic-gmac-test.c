@@ -45,6 +45,7 @@
 #define DMA_CONTROL     0x18
 #define DMA_INTR_EN     0x1c
 #define DMA_MISSED      0x20
+#define DMA_RIWT        0x24
 #define DMA_HW_FEATURE  0x58
 
 #define CFG_RE          (1 << 2)
@@ -1089,6 +1090,66 @@ static void test_wire(void)
     qtest_quit(qts);
 }
 
+/* a frame from the wire sent and, if the guest's ring takes it, stored */
+static bool wire_rx_at(QTestState *qts, int sk, struct sockaddr_in *to,
+                       unsigned idx)
+{
+    Frame f;
+
+    frame_eth(&f, ME, SRC, 0x0806, 60);
+    g_assert_cmpint(sendto(sk, f.d, 60, 0, (struct sockaddr *)to,
+                           sizeof(*to)), ==, 60);
+    for (int i = 0; i < 20 && qtest_readl(qts, RXD + idx * STRIDE) >> 31;
+         i++) {
+        qtest_clock_step(qts, 1000000);
+        g_usleep(10000);
+    }
+    return !(qtest_readl(qts, RXD + idx * STRIDE) >> 31);
+}
+
+static bool wire_rx(QTestState *qts, int sk, struct sockaddr_in *to)
+{
+    return wire_rx_at(qts, sk, to, 0);
+}
+
+/*
+ * RDES1.DIC holds RI back, as a driver that mitigates with RIWT sets it: RI
+ * comes RIWT x 256 bus clocks after the frame, not with it. The delay's unit
+ * and clock are the databook's, not measured.
+ */
+static void test_riwt(void)
+{
+    struct sockaddr_in me;
+    int qp, sk = wire_open(&me, &qp);
+    QTestState *qts = qtest_initf("-machine ingenic-t31 -nic socket,"
+                                  "udp=127.0.0.1:%d,localaddr=127.0.0.1:%d",
+                                  ntohs(me.sin_port), qp);
+    Setup su = { .rx_n = 2, .rx_size = 2048 };
+    struct sockaddr_in to = me;
+
+    to.sin_port = htons(qp);
+    gmac_prepare(qts, &su);
+    qtest_writel(qts, GMAC + MAC_CONFIG,
+                 qtest_readl(qts, GMAC + MAC_CONFIG) & ~CFG_LM);
+    qtest_writel(qts, RXD + 4, 2048 | 1u << 31);
+    qtest_writel(qts, DMA + DMA_RIWT, 0xff);
+
+    g_assert_true(wire_rx(qts, sk, &to));
+    g_assert_cmphex(qtest_readl(qts, DMA + DMA_STATUS) & ST_RI, ==, 0);
+    qtest_clock_step(qts, 100000);
+    g_assert_cmphex(qtest_readl(qts, DMA + DMA_STATUS) & ST_RI, ==, 0);
+    qtest_clock_step(qts, 1000000);
+    g_assert_cmphex(qtest_readl(qts, DMA + DMA_STATUS) & ST_RI, ==, ST_RI);
+
+    /* a frame without DIC raises RI at once */
+    qtest_writel(qts, DMA + DMA_STATUS, ST_RI);
+    g_assert_cmphex(qtest_readl(qts, DMA + DMA_STATUS) & ST_RI, ==, 0);
+    g_assert_true(wire_rx_at(qts, sk, &to, 1));
+    g_assert_cmphex(qtest_readl(qts, DMA + DMA_STATUS) & ST_RI, ==, ST_RI);
+    close(sk);
+    qtest_quit(qts);
+}
+
 /* -nic with an id= is configured once, as any board's is */
 static void test_nic_id(void)
 {
@@ -1122,6 +1183,7 @@ int main(int argc, char **argv)
     qtest_add_func("ingenic-gmac/csum/rx", test_csum_rx);
     qtest_add_func("ingenic-gmac/status", test_status);
     qtest_add_func("ingenic-gmac/wire", test_wire);
+    qtest_add_func("ingenic-gmac/riwt", test_riwt);
     qtest_add_func("ingenic-gmac/nic-id", test_nic_id);
     return g_test_run();
 }
