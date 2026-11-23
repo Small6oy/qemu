@@ -703,7 +703,8 @@ static void ingenic_t31_cpm_reset_hold(Object *obj, ResetType type)
     /*
      * A reset locks the scratch pad but keeps what it holds, as a watchdog
      * reset does on silicon; each part powers on with a word of its own
-     * there. T10 to T31 kernels write 0x101 into it at boot, and the T10,
+     * there. The T10 to T31 3.10 kernels' MXU2 licence module (mxu-v2-ex)
+     * writes 0x101 into it at boot (0x110 when unlicensed), and the T10,
      * T20, T21 and T30 libimps read its low byte as the grade (0x10 the Lite)
      */
     s->regs[REG_INDEX(CPM_CPSPR)]  = pad;
