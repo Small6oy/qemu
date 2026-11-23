@@ -169,14 +169,6 @@ static void ingenic_t31_board_init(MachineState *machine)
     cpu_mips_irq_init_cpu(cpu);
     cpu_mips_clock_init(cpu);
 
-    /* Connect GMAC NIC to netdev before realize */
-    {
-        NetClientState *nc = qemu_find_netdev("n0");
-        if (nc) {
-            qdev_prop_set_netdev(DEVICE(&s->gmac), "netdev", nc);
-        }
-    }
-
     if (machine->audiodev) {
         qdev_prop_set_string(DEVICE(&s->aic), "audiodev", machine->audiodev);
         qdev_prop_set_string(DEVICE(&s->dmic), "audiodev", machine->audiodev);

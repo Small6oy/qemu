@@ -1089,6 +1089,18 @@ static void test_wire(void)
     qtest_quit(qts);
 }
 
+/* -nic with an id= is configured once, as any board's is */
+static void test_nic_id(void)
+{
+    QTestState *qts = qtest_init("-machine ingenic-t31 -nic user,id=n0");
+
+    g_assert_cmphex(qtest_readl(qts, GMAC + 0x20), ==, 0x2037);
+    qtest_quit(qts);
+    qts = qtest_init("-machine ingenic-t21 -netdev user,id=n0");
+    g_assert_cmphex(qtest_readl(qts, GMAC + 0x20), ==, 0x2037);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1110,5 +1122,6 @@ int main(int argc, char **argv)
     qtest_add_func("ingenic-gmac/csum/rx", test_csum_rx);
     qtest_add_func("ingenic-gmac/status", test_status);
     qtest_add_func("ingenic-gmac/wire", test_wire);
+    qtest_add_func("ingenic-gmac/nic-id", test_nic_id);
     return g_test_run();
 }

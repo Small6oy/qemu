@@ -1668,13 +1668,16 @@ static void ingenic_t31_realize(DeviceState *dev, Error **errp)
         }
     }
 
-    /* GMAC */
-    {
-        bool matched = qemu_configure_nic_device(DEVICE(&s->gmac), true,
-                                                  NULL);
-        if (!matched) {
-            matched = qemu_configure_nic_device(DEVICE(&s->gmac), false,
-                                                 "ingenic-gmac");
+    /*
+     * GMAC: a -nic, else a bare -netdev id=n0 (the run scripts' convention).
+     * Only one of them may set the netdev property.
+     */
+    if (!qemu_configure_nic_device(DEVICE(&s->gmac), true, NULL) &&
+        !qemu_configure_nic_device(DEVICE(&s->gmac), false, "ingenic-gmac")) {
+        NetClientState *nc = qemu_find_netdev("n0");
+
+        if (nc) {
+            qdev_prop_set_netdev(DEVICE(&s->gmac), "netdev", nc);
         }
     }
     sysbus_realize(SYS_BUS_DEVICE(&s->gmac), &error_fatal);
