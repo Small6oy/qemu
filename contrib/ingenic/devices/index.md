@@ -11,7 +11,7 @@ One page per machine, generated from the model. The boot paths and how the model
 | [ingenic-t20](ingenic-t20.md) | `ingenic-t31` | t20x | 80 | t20x |
 | [ingenic-t21](ingenic-t21.md) | `ingenic-t31` | t21n | 77 | t21n |
 | [ingenic-t23](ingenic-t23.md) | `ingenic-t31` | t23n | 77 | t23n, t23dl |
-| [ingenic-t30](ingenic-t30.md) | `ingenic-t31` | t30x | 83 | t30x |
+| [ingenic-t30](ingenic-t30.md) | `ingenic-t31` | t30x | 84 | t30x |
 | [ingenic-t31](ingenic-t31.md) | `ingenic-t31` | t31x | 76 | t31x |
 | [ingenic-t32](ingenic-t32.md) | `ingenic-t31` | t32lq | 93 | t32lq |
 | [ingenic-t33](ingenic-t33.md) | `ingenic-t31` | default | 90 | none |

@@ -19,6 +19,7 @@ Memory map of the `ingenic-t30` machine, SoC type `ingenic-t31`, with the `t30x`
 | 0x10021000 | 0x200 | ingenic-aic window 1 | `ingenic-aic` | modelled |  |
 | 0x10022000 | 4 KiB | ingenic-dphy | `ingenic-dphy` | modelled |  |
 | 0x10023000 | 4 KiB | ingenic-dmic | `ingenic-dmic` | register-accurate | t30x 8 |
+| 0x10032000 | 4 KiB | ingenic-t10-uart2 | `unimplemented-device` | stub |  |
 | 0x10034000 | 4 KiB | ingenic-t31-dmic | `unimplemented-device` | stub |  |
 | 0x10040000 | 4 KiB | ingenic-mipi-csi | `ingenic-mipi-csi` | modelled |  |
 | 0x10043000 | 4 KiB | ingenic-ssi #0 | `ingenic-ssi` | register-accurate | t30x 7 |
@@ -29,7 +30,7 @@ Memory map of the `ingenic-t30` machine, SoC type `ingenic-t31`, with the `t30x`
 | 0x10060000 | 4 KiB | ingenic-usbphy | `ingenic-usbphy` | modelled |  |
 | 0x10061000 | 4 KiB | ingenic-des | `ingenic-des` | register-accurate | t30x 3 |
 | 0x10070000 | 4 KiB | ingenic-sadc | `ingenic-sadc` | register-accurate | t30x 2 |
-| 0x10072000 | 4 KiB | ingenic-dtrng | `ingenic-dtrng` | modelled |  |
+| 0x10072000 | 4 KiB | ingenic-t30-dtrng | `unimplemented-device` | stub |  |
 | 0x12000000 | 0x100 | ingenic-sysost #0 | `ingenic-sysost` | modelled |  |
 | 0x12200000 | 1 MiB | ingenic-t23-vpu-ctl | `unimplemented-device` | stub |  |
 | 0x12600000 | 64 KiB | ingenic-t32-tnpu0 | `unimplemented-device` | stub |  |
@@ -79,6 +80,7 @@ Memory map of the `ingenic-t30` machine, SoC type `ingenic-t31`, with the `t30x`
 | 0xffffffffffffffff | 32 KiB | ingenic-lzma #1 | `ingenic-lzma` | modelled |  |
 | 0xffffffffffffffff | 8 KiB | ingenic-riscv window 1 | `ingenic-riscv` | modelled |  |
 | 0xffffffffffffffff | 8 KiB | ingenic-t31-sfc #1 | `ingenic-t31-sfc` | modelled |  |
+| 0xffffffffffffffff | 4 KiB | ingenic-dtrng | `ingenic-dtrng` | modelled |  |
 | 0xffffffffffffffff | 4 KiB | ingenic-ssi-slv | `ingenic-ssi-slv` | modelled |  |
 | 0xffffffffffffffff | 4 KiB | ingenic-tnna window 1 | `ingenic-tnna` | modelled |  |
 | 0xffffffffffffffff | 4 KiB | ingenic-tnna window 2 | `ingenic-tnna` | modelled |  |
@@ -88,11 +90,10 @@ Memory map of the `ingenic-t30` machine, SoC type `ingenic-t31`, with the `t30x`
 | 0xffffffffffffffff | 4 KiB | ingenic-tnpu window 1 | `ingenic-tnpu` | modelled |  |
 | 0xffffffffffffffff | 4 KiB | ingenic-uart #0 | `ingenic-uart` | modelled |  |
 | 0xffffffffffffffff | 4 KiB | ingenic-uart #1 | `ingenic-uart` | modelled |  |
-| 0xffffffffffffffff | 4 KiB | ingenic-uart #2 | `ingenic-uart` | modelled |  |
 | 0xffffffffffffffff | 0x100 | generic-sdhci #0 | `generic-sdhci` | modelled |  |
 | 0xffffffffffffffff | 0x100 | generic-sdhci #1 | `generic-sdhci` | modelled |  |
 
-83 blocks: 6 helper region, 44 modelled, 25 register-accurate, 8 stub.
+84 blocks: 6 helper region, 43 modelled, 25 register-accurate, 10 stub.
 
 A block is listed with the span its device maps. A stub wholly covered by a model is not listed. A stub or a helper region has the lowest priority, so any block inside its span answers in its place. A census register counts for the smallest block that holds it; the Census column gives, per census part, how many registers of the table are in the block.
 
