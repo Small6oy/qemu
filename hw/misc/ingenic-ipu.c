@@ -45,6 +45,7 @@
 #include "migration/vmstate.h"
 #include "system/address-spaces.h"
 #include "hw/misc/ingenic-ipu.h"
+#include "trace.h"
 
 #define IPU_FM_CTRL         0x000
 #define IPU_STATUS          0x004
@@ -541,6 +542,10 @@ static void ipu_run(IngenicIpuState *s)
         for (int n = 0; n < INGENIC_IPU_OSD_CHANNELS; n++) {
             uint32_t para = R(IPU_OSD_PARA(n));
 
+            if (para & PARA_EN) {
+                trace_ingenic_ipu_osd(n, para, R(IPU_OSD_BAK_ARGB(n)),
+                                      R(IPU_OSD_GS(n)), R(IPU_OSD_POS(n)));
+            }
             if ((para & (PARA_EN | PARA_HIDDEN | PARA_MASK)) ==
                 (PARA_EN | PARA_MASK)) {
                 ipu_osd_mask(s, n, w, h);
@@ -572,6 +577,7 @@ static void ingenic_ipu_write(void *opaque, hwaddr off, uint64_t value,
     IngenicIpuState *s = INGENIC_IPU(opaque);
     uint32_t v = value;
 
+    trace_ingenic_ipu_write(off, v);
     switch (off) {
     case IPU_STATUS:
         R(IPU_STATUS) = v & STATUS_OUT_END;

@@ -461,6 +461,10 @@ ingenic_a1_vdac_write(uint64_t off, uint64_t val) "register 0x%03" PRIx64 " <- 0
 ingenic_a1_ipu_desc(uint32_t addr, uint32_t hdr, uint32_t next, unsigned words, uint32_t th, uint32_t tv) "descriptor 0x%08x: header 0x%08x, next 0x%08x, %u words, tables 0x%08x 0x%08x"
 ingenic_a1_ipu_write(uint32_t reg, uint32_t val) "register 0x%04x = 0x%08x"
 
+# ingenic-ipu.c
+ingenic_ipu_write(uint32_t off, uint32_t val) "0x%03x <- 0x%08x"
+ingenic_ipu_osd(unsigned n, uint32_t para, uint32_t bak, uint32_t gs, uint32_t pos) "channel %u: PARA 0x%08x, BAK_ARGB 0x%08x, GS 0x%08x, POS 0x%08x"
+
 # ingenic-isp.c
 ingenic_isp_read(uint32_t off, uint32_t val, uint32_t pc, const char *name) "0x%05x -> 0x%08x at 0x%08x %s"
 ingenic_isp_write(uint32_t off, uint32_t val, uint32_t pc, const char *name) "0x%05x <- 0x%08x at 0x%08x %s"
