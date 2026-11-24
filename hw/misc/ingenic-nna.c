@@ -83,9 +83,10 @@
  * Not modelled yet: on the T40, data other than 8 bits and what QSUM and
  * the register reads do; on both, 2- and 16-bit data, the output pixel
  * order (0x48, 0x49), WFCW's invert-MSB bit, the lines a T41's port writes
- * with no WFCW program (0x5a = 0), what the registers read back beyond
- * what was written to them, the output a NNDRD reads before any
- * QSUM (the previous contents), and a second window a T41NQ also reads,
+ * with no WFCW program (0x5a = 0: they depend on earlier F writes, and a
+ * lone write can hang a T41NQ; logged as a guest error), what the registers
+ * read back beyond what was written to them, the output a NNDRD reads before
+ * any QSUM (the previous contents), and a second window a T41NQ also reads,
  * 120 pixels on, in a 4-bit 3x3 layout with two planes and a stride of 2
  * (where the sample's layers keep nothing).
  *
@@ -239,6 +240,7 @@ static void nn_slots(IngenicNnaState *s)
         if (n) {
             nn_unroll(s, p, 0, n, 0);
         } else {
+            /* not silicon's rule (there is none to model): see nn_fwrite */
             s->slot_inc[p][0] = 1;
             s->slot_jump[p][0] = false;
             s->nslots[p] = 1;
@@ -286,6 +288,16 @@ static void nn_fwrite(IngenicNnaState *s, unsigned p, const uint8_t *data)
                  INGENIC_NNA_FRAM;
     unsigned n;
 
+    if (!extract32(s->reg[0x5a], 4 * p, 3) && !s->port_half[p] &&
+        !s->port_slot[p]) {
+        /*
+         * With no WFCW program a T41NQ's lines depend on earlier F writes,
+         * and a lone NNDWR can hang it; once per 0x50/0x51 write.
+         */
+        qemu_log_mask(LOG_GUEST_ERROR, "ingenic-nna: port %u writes F with "
+                      "no WFCW program (0x5a = 0); silicon's lines are not "
+                      "modelled\n", p);
+    }
     for (unsigned i = 0; i < 64; i++) {
         nn_fset(s, o + i, data[i]);
     }
