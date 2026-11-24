@@ -20,7 +20,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(IngenicNnaState, INGENIC_NNA)
 #define INGENIC_NNA_WINDOW      (64 * KiB)  /* NNDMA and its descriptors */
 #define INGENIC_NNA_NNDMA_REGS  8
 #define INGENIC_NNA_REGS        0x80
-#define INGENIC_NNA_WRAM        (576 * KiB) /* a T40's 3x3 W; a T41 uses 256 */
+#define INGENIC_NNA_WRAM        (576 * KiB) /* a T40's 3x3 W; a T41 uses 72 */
 #define INGENIC_NNA_BTRAM       (16 * KiB)
 #define INGENIC_NNA_FRAM        (128 * KiB) /* 1024 lines of 128 bytes */
 #define INGENIC_NNA_OUT         1024

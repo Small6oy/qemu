@@ -191,7 +191,7 @@ typedef struct {
 } NnRec;
 
 typedef struct {
-    NnRec rec[512];
+    NnRec rec[1280];
     unsigned n;
     uint32_t rng;
 } NnProg;
@@ -963,6 +963,71 @@ static void test_engine_f_slices(void)
     }
 }
 
+/*
+ * A T41NQ's W RAM holds 288 entries (72 KiB) and a write past them wraps
+ * to entry 0. 73 groups of 4 entries are written in turn: group g puts
+ * (g % 100) + 1 on oc 0 and g / 100 + 1 on oc 1 for input channel 0 (8-bit,
+ * msf_mode 2, 0x28 at 2: w = v - 128), 0 elsewhere. Channel 0 of every
+ * pixel is 1, so one MAC at W entry 0 sums the weights of the group there:
+ * group 72's, 73 and 1, as a T41NQ gives it (group 0's would be 1 and 1).
+ */
+static void test_engine_w_wrap(void)
+{
+    static const uint16_t regs[][2] = {
+        { 0x3b, 0x33 }, { 0x46, 2 }, { 0x28, 2 }, { 0x55, 2 }, { 0x38, 0x12 },
+        { 0x3f, 0xff }, { 0x2f, 0 }, { 0x2e, 0x7ff }, { 0x2c, 0x7ff },
+        { 0x3e, 1 }, { 0x3c, 0 }, { 0x3a, 0 }, { 0x39, 4 }, { 0x37, 8 },
+    };
+    static const uint8_t quarter[4] = { 0x00, 0x02, 0x04, 0x07 };
+    enum { GROUPS = 73 };
+    g_autofree NnProg *g = g_new0(NnProg, 1);
+    g_autofree uint8_t *out = NULL;
+    uint8_t w[256], f[64] = { 0 };
+
+    add(g, NN_CMD, 0);
+    for (unsigned i = 0; i < ARRAY_SIZE(regs); i++) {
+        add_word(g, NN_RWR, regs[i][0], regs[i][1]);
+    }
+    add_word(g, NN_RWR, 0x5c, 0);
+    for (unsigned grp = 0; grp < GROUPS; grp++) {
+        unsigned v[2] = { grp % 100 + 1 + 128, grp / 100 + 1 + 128 };
+
+        for (unsigned k = 0; k < 4; k++) {
+            /* weight 0 is v = 128: only slice 3 is set (2) */
+            memset(w, k == 3 ? 0xaa : 0, sizeof(w));
+            for (unsigned o = 0; o < 2; o++) {
+                w[o * 8] = (w[o * 8] & ~3) | (v[o] >> (2 * k) & 3);
+            }
+            for (int q = 0; q < 4; q++) {
+                memcpy(add(g, NN_DWR, quarter[q])->data, &w[64 * q], 64);
+            }
+        }
+    }
+    add_word(g, NN_RWR, 0x5b, 0);
+    add_word(g, NN_RWR, 0x45, 2);
+    add_word(g, NN_RWR, 0x58, 0);
+    add_word(g, NN_RWR, 0x59, 0x0801);
+    add_word(g, NN_RWR, 0x5a, 1);
+    add(g, NN_CMD, 0x60);
+    f[0] = f[32] = 1;
+    add_word(g, NN_RWR, 0x50, 0);
+    for (int i = 0; i < 4; i++) {
+        memcpy(add(g, NN_DWR, 0x20)->data, f, 64);
+    }
+    add_word(g, NN_RWR, 0x29, 0);
+    add_word(g, NN_RWR, 0x2b, 0);
+    add_word(g, NN_RWR, 0x31, 0);
+    add_word(g, NN_RWR, 0x30, 0);
+    add_word(g, NN_MAC, 1, 0);
+    add(g, NN_CMD, 0x83);
+    for (unsigned i = 0; i < 16; i++) {
+        add(g, NN_DRD, i);
+    }
+    out = nn_read_on("ingenic-t41", g, 1024);
+    g_assert_cmpint((int32_t)ldl_le_p(&out[0]), ==, 73);
+    g_assert_cmpint((int32_t)ldl_le_p(&out[4]), ==, 1);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -986,5 +1051,6 @@ int main(int argc, char **argv)
     qtest_add_func("ingenic/nna/engine/t40-1x1", test_engine_t40_1x1);
     qtest_add_func("ingenic/nna/engine/t40-3x3", test_engine_t40_3x3);
     qtest_add_func("ingenic/nna/engine/f-slices", test_engine_f_slices);
+    qtest_add_func("ingenic/nna/engine/w-wrap", test_engine_w_wrap);
     return g_test_run();
 }

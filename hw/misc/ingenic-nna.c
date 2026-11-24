@@ -144,7 +144,7 @@ static const uint8_t nn_snake[9][2] = {
 
 static const uint8_t nn_qshift[4] = { 1, 5, 10, 1 };
 
-#define NN_WRAM_T41         (256 * KiB)
+#define NN_WRAM_T41         (72 * KiB)  /* 288 entries; writes past them wrap */
 
 /* ingenic_nna_op's op: MXU3_NN_* in target/mips/cpu.h */
 enum { NN_RWR, NN_RRD, NN_DWR, NN_DRD, NN_MAC, NN_CMD };
@@ -174,7 +174,7 @@ static unsigned nn_ntaps(IngenicNnaState *s)
     return ctpop32(s->reg[0x3e] & 0x1ff);
 }
 
-/* W entries the RAM holds: a T40's 256 per kernel tap, a T41's 1024 */
+/* W entries the RAM holds: a T40's 256 per kernel tap, a T41NQ's 288 */
 static uint32_t nn_wcap(IngenicNnaState *s)
 {
     return s->t40 ? 256 * MAX(nn_ntaps(s), 1) : NN_WRAM_T41 / 256;
